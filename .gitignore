@@ -1,0 +1,65 @@
+# ==========================================
+#          PROJETO C# / .NET
+# ==========================================
+
+# --- Pastas de Compilação (Build Output) ---
+[Dd]ebug/
+[Dd]ebugPS/
+[Rr]elease/
+[Rr]eleasePS/
+bin/
+obj/
+x64/
+x86/
+[Aa]rm/
+[Aa]rm64/
+bld/
+[Bb]in/
+[Oo]bj/
+
+# --- Arquivos específicos do Visual Studio ---
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.dbmdl
+*.jfm
+*.lck
+
+# --- Resultados de Testes e Cobertura de Código ---
+TestResults/
+BenchmarkDotNet.Artifacts/
+*.trx
+*.coverage
+*.coveragexml
+
+# --- Gerenciamento de Pacotes (NuGet) ---
+packages/
+*.nuget.dgspec.json
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+
+# --- Arquivos de IDEs Alternativas ---
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains Rider / IntelliJ
+.idea/
+*.sln.iml
+
+# --- Segurança e Configurações Sensíveis ---
+# Evite subir credenciais, chaves de API e conexões de banco de dados
+*.usersecrets/
+appsettings.local.json
+
+# --- Arquivos do Sistema Operacional ---
+.DS_Store
+Thumbs.db
