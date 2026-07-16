@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="System.IO.Ports" Version="9.0.0" />
+    <PackageReference Include="vJoy.Wrapper" Version="1.0.0.5" />
   </ItemGroup>
 
   <ItemGroup>

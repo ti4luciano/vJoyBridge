@@ -1,6 +1,5 @@
 #nullable enable
 using System;
-using System.Runtime.InteropServices;
 using vJoyInterfaceWrap;
 
 namespace vJoyBridge
@@ -13,7 +12,7 @@ namespace vJoyBridge
     {
         public event Action<int, int>? OnForceFeedbackReceived;
 
-        private vJoy? _joystick;
+        private vJoyInterfaceWrap.vJoy? _joystick;
 
         // =========================================================================
         // --- P/Invoke Direto para a vJoyInterface.dll (Nativo C++) ---
@@ -22,28 +21,9 @@ namespace vJoyBridge
 
         private const uint ERROR_SUCCESS = 0;
 
-        // Assinatura de callback correspondente ao driver vJoy nativo
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        private delegate void FfbCbFunc(IntPtr packet, IntPtr userData);
-
-        [DllImport("vJoyInterface.dll", EntryPoint = "FfbRegisterGenCB", CallingConvention = CallingConvention.Cdecl)]
-        private static extern void FfbRegisterGenCB(FfbCbFunc cb, IntPtr data);
-
-        [DllImport("vJoyInterface.dll", EntryPoint = "FfbGetCommandType", CallingConvention = CallingConvention.Cdecl)]
-        private static extern uint FfbGetCommandType(IntPtr packet, ref uint type);
-
-        [DllImport("vJoyInterface.dll", EntryPoint = "FfbGetConstForce", CallingConvention = CallingConvention.Cdecl)]
-        private static extern uint FfbGetConstForce(IntPtr packet, ref int magnitude);
-
-        [DllImport("vJoyInterface.dll", EntryPoint = "FfbGetEffectType", CallingConvention = CallingConvention.Cdecl)]
-        private static extern uint FfbGetEffectType(IntPtr packet, ref uint effectType);
-
-        // Mantém a referência do delegate ativa na memória para evitar Garbage Collection do ponteiro
-        private FfbCbFunc? _ffbCallbackHolder;
-
         public bool Initialize(uint deviceId)
         {
-            _joystick = new vJoy();
+            _joystick = new vJoyInterfaceWrap.vJoy();
 
             if (!_joystick.vJoyEnabled())
             {
@@ -73,10 +53,10 @@ namespace vJoyBridge
             }
             else
             {
-                // Registra o callback nativo diretamente na DLL de C++
-                _ffbCallbackHolder = new FfbCbFunc(OnFfbDataReceived);
-                FfbRegisterGenCB(_ffbCallbackHolder, IntPtr.Zero);
-                Console.WriteLine($"[vJoy] Canal FFB registrado via P/Invoke na vJoyInterface.dll.");
+                // Registra o callback usando a API do wrapper vJoyInterfaceWrap.
+                // Esta versão do vJoy expõe os helpers Ffb_h_* e evita o EntryPointNotFoundException.
+                _joystick.FfbRegisterGenCB(OnFfbDataReceived, null);
+                Console.WriteLine("[vJoy] Canal FFB registrado via wrapper vJoyInterfaceWrap.");
             }
 
             return true;
@@ -95,49 +75,59 @@ namespace vJoyBridge
         }
 
         /// <summary>
-        /// Callback de FFB em baixa latência executado diretamente pela DLL nativa do driver.
+        /// Callback de FFB interpretando os pacotes pelo wrapper oficial do vJoy.
         /// </summary>
-        private void OnFfbDataReceived(IntPtr packet, IntPtr userData)
+        private void OnFfbDataReceived(IntPtr packet, object userData)
         {
-            uint cmdType = 0;
-            if (FfbGetCommandType(packet, ref cmdType) != ERROR_SUCCESS) return;
-
-            Console.WriteLine($"[vJoy FFB RAW] Comando recebido: Tipo {cmdType}");
-
-            // Controle de dispositivo (Play, Stop, Reset)
-            if (cmdType == 6) // FFBPKT_DEVCTRL
+            FFBPType packetType = FFBPType.PT_EFFREP;
+            if (_joystick?.Ffb_h_Type(packet, ref packetType) != ERROR_SUCCESS)
             {
-                Console.WriteLine("[vJoy FFB] Comando de controle de dispositivo recebido (Ex: Reset/Ativar).");
                 return;
             }
 
-            // Força Constante (Principal efeito gerado pela simulação física do jogo)
-            if (cmdType == 2) // FFBPKT_CONST
+            Console.WriteLine($"[vJoy FFB RAW] Comando recebido: Tipo {packetType}");
+
+            if (packetType == FFBPType.PT_CTRLREP)
             {
-                int magnitude = 0;
-                // No C++ nativo, retornar ERROR_SUCCESS (0) indica sucesso
-                if (FfbGetConstForce(packet, ref magnitude) == ERROR_SUCCESS)
+                FFB_CTRL control = 0;
+                if (_joystick?.Ffb_h_DevCtrl(packet, ref control) == ERROR_SUCCESS)
                 {
-                    // DirectInput magnitude varia de -10000 (esquerda) a 10000 (direita)
-                    // Traduzimos para PWM (0 a 255) e Direção (0 ou 1) para a ponte H
+                    Console.WriteLine($"[vJoy FFB] Controle de dispositivo recebido: {control}");
+                }
+
+                return;
+            }
+
+            if (packetType != FFBPType.PT_EFFREP)
+            {
+                return;
+            }
+
+            vJoyInterfaceWrap.vJoy.FFB_EFF_REPORT effectReport = default;
+            if (_joystick?.Ffb_h_Eff_Report(packet, ref effectReport) != ERROR_SUCCESS)
+            {
+                return;
+            }
+
+            if (effectReport.EffectType == FFBEType.ET_CONST)
+            {
+                vJoyInterfaceWrap.vJoy.FFB_EFF_CONSTANT constantEffect = default;
+                if (_joystick?.Ffb_h_Eff_Constant(packet, ref constantEffect) == ERROR_SUCCESS)
+                {
+                    int magnitude = constantEffect.Magnitude;
                     int pwm = Math.Abs(magnitude) * 255 / 10000;
                     int direction = magnitude >= 0 ? 1 : 0;
 
                     pwm = Math.Clamp(pwm, 0, 255);
 
-                    // Dispara o evento repassando ao controlador
                     OnForceFeedbackReceived?.Invoke(pwm, direction);
 
                     Console.WriteLine($"[vJoy FFB] CONST -> Magnitude: {magnitude} | PWM: {pwm} | Dir: {direction}");
                 }
             }
-            else if (cmdType == 1) // FFBPKT_EFFREP (Fricção, Mola, etc)
+            else
             {
-                uint effectType = 0;
-                if (FfbGetEffectType(packet, ref effectType) == ERROR_SUCCESS)
-                {
-                    Console.WriteLine($"[vJoy FFB] EFFECT REPORT -> Efeito: {effectType} (Mola/Amortecimento/Fricção)");
-                }
+                Console.WriteLine($"[vJoy FFB] EFFECT REPORT -> Efeito: {effectReport.EffectType}");
             }
         }
     }
