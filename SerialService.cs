@@ -9,10 +9,10 @@ namespace vJoyBridge
     /// </summary>
     public class SerialService : ISerialService
     {
-        public event Action<string>? OnMessageReceived;
+        public event Action<string> OnMessageReceived;
 
-        private SerialPort? _serialPort;
-        private Thread? _readThread;
+        private SerialPort _serialPort;
+        private Thread _readThread;
         private bool _isRunning;
 
         public void Connect(string portName, int baudRate)

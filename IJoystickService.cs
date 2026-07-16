@@ -1,3 +1,4 @@
+using System;
 using vJoyInterfaceWrap;
 
 namespace vJoyBridge
@@ -21,5 +22,8 @@ namespace vJoyBridge
 
         /// <summary>Libera o dispositivo virtual e encerra a conexão.</summary>
         void Shutdown(uint deviceId);
+
+        /// <summary>Disparado quando o jogo envia uma força de feedback real (PWM, Direção).</summary>
+        event Action<int, int> OnForceFeedbackReceived;
     }
 }

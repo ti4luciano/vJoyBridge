@@ -1,22 +1,13 @@
 using System;
-using System.Timers;
 using vJoyInterfaceWrap;
 
 namespace vJoyBridge
 {
-    /// <summary>
-    /// Coordena a comunicação entre a Serial e o vJoy.
-    /// Contém a regra de conversão de dados e lógica de Force Feedback.
-    /// </summary>
     public class BridgeController
     {
         private readonly ISerialService _serialService;
         private readonly IJoystickService _vJoyService;
         private readonly uint _deviceId;
-        
-        // Timer para enviar dados de Força para o STM32 (FFB Simulado)
-        private readonly Timer _ffbTimer;
-        private bool _motorDirection = false;
 
         public BridgeController(ISerialService serialService, IJoystickService vJoyService, uint deviceId = 1)
         {
@@ -24,12 +15,11 @@ namespace vJoyBridge
             _vJoyService = vJoyService;
             _deviceId = deviceId;
 
-            // Inscreve-se no evento de mensagem recebida
+            // Inscrição: Posição do STM32 -> vJoy
             _serialService.OnMessageReceived += HandleSerialMessage;
 
-            // Configura o timer para enviar feedback ao STM32 a cada 500ms
-            _ffbTimer = new Timer(500);
-            _ffbTimer.Elapsed += SendForceFeedback;
+            // Inscrição: Força do vJoy (Jogo) -> STM32
+            _vJoyService.OnForceFeedbackReceived += HandleForceFeedbackReceived;
         }
 
         public void Start(string portName, int baudRate)
@@ -37,21 +27,19 @@ namespace vJoyBridge
             if (_vJoyService.Initialize(_deviceId))
             {
                 _serialService.Connect(portName, baudRate);
-                _ffbTimer.Start();
-                Console.WriteLine("[Bridge] Sistema operante. Tradução iniciada.");
+                Console.WriteLine("[Bridge] Pronto para traduzir posição e FFB.");
             }
         }
 
         public void Stop()
         {
-            _ffbTimer.Stop();
             _serialService.Disconnect();
             _vJoyService.Shutdown(_deviceId);
-            Console.WriteLine("[Bridge] Sistema encerrado.");
+            Console.WriteLine("[Bridge] Encerrado.");
         }
 
         /// <summary>
-        /// Processa a mensagem vinda do STM32 e aplica no vJoy.
+        /// Processa a rotação lida no STM32 e atualiza o eixo do vJoy.
         /// </summary>
         private void HandleSerialMessage(string message)
         {
@@ -60,32 +48,23 @@ namespace vJoyBridge
                 string valStr = message.Substring(2);
                 if (int.TryParse(valStr, out int pos))
                 {
-                    // Conversão de int16 (-32768 a 32767) para vJoy uint16 (0 a 32767)
                     int vJoyValue = (pos + 32768) / 2;
                     _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, vJoyValue);
-                    
-                    // Descomente para debugar no console:
-                    // Console.WriteLine($"[STM32] Pos: {pos} -> [vJoy] {vJoyValue}");
                 }
             }
         }
 
         /// <summary>
-        /// Envia comandos de força motriz (PWM e Direção) de volta ao microcontrolador.
-        /// Formato esperado pelo seu STM32: "F:{pwm},{direcao}"
+        /// Captura o FFB real gerado pelo vJoy e envia via Serial para o STM32.
         /// </summary>
-        private void SendForceFeedback(object? sender, ElapsedEventArgs e)
+        private void HandleForceFeedbackReceived(int pwm, int direction)
         {
-            // Alterna a direção e gera uma força simulada para testes
-            int pwm = 150; // Força simulada
-            int dir = _motorDirection ? 1 : 0;
-            _motorDirection = !_motorDirection; // Inverte para o próximo ciclo
-
-            string ffbCommand = $"F:{pwm},{dir}\n";
+            // Monta a mensagem no padrão "F:{pwm},{dir}\n"
+            string ffbCommand = $"F:{pwm},{direction}\n";
+            
             _serialService.SendMessage(ffbCommand);
-
-            // Log para você visualizar que o dado está sendo enviado
-            Console.WriteLine($"[FFB] Enviado para STM32: {ffbCommand.Trim()}");
+            
+            Console.WriteLine($"[Bridge -> STM32] FFB Enviado: {ffbCommand.Trim()}");
         }
     }
 }
