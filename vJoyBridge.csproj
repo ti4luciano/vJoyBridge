@@ -17,7 +17,7 @@
     </Reference>
 
     <None Include="lib\vJoyInterface.dll">
-      <Link>vJoyInterface.dll</Link> <!-- O segredo está aqui! -->
+      <Link>vJoyInterface.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
