@@ -1,3 +1,4 @@
+//Usar a configuração de placa STM32F1xx -> STM32F103C6/fake
 /*
  * Firmware FFB - Ponte Serial para BackForceFeeder
  * MCU: STM32F103C6
@@ -8,14 +9,14 @@
 // ==========================================================
 // Configuração de Pinos
 // ==========================================================
-#define ENCODER_PIN_A PA1 
-#define ENCODER_PIN_B PA0 
+#define ENCODER_PIN_A PA0
+#define ENCODER_PIN_B PA1 
 #define DESLIZ_A      PB1 
 #define DESLIZ_B      PB0 
 
 // Pinos da Ponte H MX1616
-#define MOTOR_IN1 PA3
-#define MOTOR_IN2 PA2
+#define MOTOR_IN1 PA2
+#define MOTOR_IN2 PA3
 
 #define LED_PIN PC13
 
