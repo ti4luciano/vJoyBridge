@@ -77,58 +77,83 @@ namespace vJoyBridge
         /// <summary>
         /// Callback de FFB interpretando os pacotes pelo wrapper oficial do vJoy.
         /// </summary>
-        private void OnFfbDataReceived(IntPtr packet, object userData)
-        {
-            FFBPType packetType = FFBPType.PT_EFFREP;
-            if (_joystick?.Ffb_h_Type(packet, ref packetType) != ERROR_SUCCESS)
-            {
-                return;
-            }
+private void OnFfbDataReceived(IntPtr packet, object userData)
+{
+    FFBPType packetType = FFBPType.PT_EFFREP;
+    if (_joystick?.Ffb_h_Type(packet, ref packetType) != ERROR_SUCCESS) return;
 
-            Console.WriteLine($"[vJoy FFB RAW] Comando recebido: Tipo {packetType}");
-
-            if (packetType == FFBPType.PT_CTRLREP)
+    switch (packetType)
+    {
+        case FFBPType.PT_CTRLREP:
+            FFB_CTRL control = 0;
+            if (_joystick?.Ffb_h_DevCtrl(packet, ref control) == ERROR_SUCCESS)
             {
-                FFB_CTRL control = 0;
-                if (_joystick?.Ffb_h_DevCtrl(packet, ref control) == ERROR_SUCCESS)
+                //Console.WriteLine($"\n[vJoy FFB] ---> CONTROLE DE DISPOSITIVO: {control}");
+                
+                // Se o jogo mandar parar tudo ou resetar, enviamos Força 0 para o Arduino
+                if (control == FFB_CTRL.CTRL_STOPALL || control == FFB_CTRL.CTRL_DEVRST)
                 {
-                    Console.WriteLine($"[vJoy FFB] Controle de dispositivo recebido: {control}");
+                    //Console.WriteLine("[Bridge -> STM32] PARADA DE EMERGÊNCIA/RESET! Enviando PWM: 0");
+                    OnForceFeedbackReceived?.Invoke(0, 0); // 0 PWM
                 }
-
-                return;
             }
+            break;
 
-            if (packetType != FFBPType.PT_EFFREP)
-            {
-                return;
-            }
-
+        case FFBPType.PT_EFFREP:
             vJoyInterfaceWrap.vJoy.FFB_EFF_REPORT effectReport = default;
-            if (_joystick?.Ffb_h_Eff_Report(packet, ref effectReport) != ERROR_SUCCESS)
+            if (_joystick?.Ffb_h_Eff_Report(packet, ref effectReport) == ERROR_SUCCESS)
             {
-                return;
+                //Console.WriteLine($"\n[vJoy FFB] ---> NOVO EFEITO CONFIGURADO");
+                //Console.WriteLine($"   Tipo: {effectReport.EffectType} | Direção: {effectReport.Direction}");
             }
+            break;
 
-            if (effectReport.EffectType == FFBEType.ET_CONST)
+        case FFBPType.PT_CONSTREP:
+            vJoyInterfaceWrap.vJoy.FFB_EFF_CONSTANT constantEffect = default;
+            if (_joystick?.Ffb_h_Eff_Constant(packet, ref constantEffect) == ERROR_SUCCESS)
             {
-                vJoyInterfaceWrap.vJoy.FFB_EFF_CONSTANT constantEffect = default;
-                if (_joystick?.Ffb_h_Eff_Constant(packet, ref constantEffect) == ERROR_SUCCESS)
+                int magnitude = constantEffect.Magnitude;
+                int pwm = Math.Abs(magnitude) * 255 / 10000;
+                pwm = Math.Clamp(pwm, 0, 255);
+                
+                int direction = magnitude >= 0 ? 1 : 0; 
+
+                //Console.WriteLine($"\n[vJoy FFB] ---> EFEITO CONSTANTE ATUALIZADO");
+                //Console.WriteLine($"   Mag: {magnitude} | PWM Calculado: {pwm} | Dir: {direction}");
+                
+                // Envia para o motor
+                //Console.WriteLine($"[Bridge -> STM32] Enviando: F:{pwm},{direction}");
+                OnForceFeedbackReceived?.Invoke(pwm, direction);
+            }
+            break;
+
+        case FFBPType.PT_PRIDREP:
+            vJoyInterfaceWrap.vJoy.FFB_EFF_PERIOD periodicEffect = default;
+            if (_joystick?.Ffb_h_Eff_Period(packet, ref periodicEffect) == ERROR_SUCCESS)
+            {
+                int magnitude = (int)periodicEffect.Magnitude;
+                int offset = (int)periodicEffect.Offset;
+                
+                //Console.WriteLine($"\n[vJoy FFB] ---> EFEITO PERIÓDICO ATUALIZADO");
+                //Console.WriteLine($"   Mag: {magnitude} | Offset: {offset}");
+            }
+            break;
+
+        case FFBPType.PT_EFOPREP:
+            vJoyInterfaceWrap.vJoy.FFB_EFF_OP effectOp = default;
+            if (_joystick?.Ffb_h_EffOp(packet, ref effectOp) == ERROR_SUCCESS)
+            {
+                //Console.WriteLine($"\n[vJoy FFB] ---> OPERAÇÃO DE MOTOR: {effectOp.EffectOp}");
+                
+                // Aqui nós verificamos se o comando é de STOP
+                if (effectOp.EffectOp == FFBOP.EFF_STOP)
                 {
-                    int magnitude = constantEffect.Magnitude;
-                    int pwm = Math.Abs(magnitude) * 255 / 10000;
-                    int direction = magnitude >= 0 ? 1 : 0;
-
-                    pwm = Math.Clamp(pwm, 0, 255);
-
-                    OnForceFeedbackReceived?.Invoke(pwm, direction);
-
-                    Console.WriteLine($"[vJoy FFB] CONST -> Magnitude: {magnitude} | PWM: {pwm} | Dir: {direction}");
+                    //Console.WriteLine("[Bridge -> STM32] COMANDO STOP! Enviando PWM: 0");
+                    OnForceFeedbackReceived?.Invoke(0, 0); // Desliga o motor
                 }
             }
-            else
-            {
-                Console.WriteLine($"[vJoy FFB] EFFECT REPORT -> Efeito: {effectReport.EffectType}");
-            }
-        }
+            break;
+    }
+}
     }
 }

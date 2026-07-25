@@ -41,18 +41,47 @@ namespace vJoyBridge
         /// <summary>
         /// Processa a rotação lida no STM32 e atualiza o eixo do vJoy.
         /// </summary>
-        private void HandleSerialMessage(string message)
+private void HandleSerialMessage(string message)
+{
+    // Divide a string onde houver espaço. 
+    // Ex: "X:52 Y:761 Z:1023" vira um array ["X:52", "Y:761", "Z:1023"]
+    string[] eixos = message.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+    foreach (string eixo in eixos)
+    {
+        if (eixo.StartsWith("X:"))
         {
-            if (message.StartsWith("X:"))
+            if (int.TryParse(eixo.Substring(2), out int pos))
             {
-                string valStr = message.Substring(2);
-                if (int.TryParse(valStr, out int pos))
-                {
-                    int vJoyValue = (pos + 32768) / 2;
-                    _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, vJoyValue);
-                }
+                int posLimitada = pos; // O STM32 já está limitando, mas não custa garantir
+// Mapeia de -162 a 162 para 0 a 32768
+                int vJoyValue = Remap(posLimitada, -162, 162, 0, 32768);
+                 Console.WriteLine($"X (Encoder): {vJoyValue}");
+                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, vJoyValue);
             }
         }
+        else if (eixo.StartsWith("Y:"))
+        {
+            if (int.TryParse(eixo.Substring(2), out int pos))
+            {
+                // Mapeia de 0-1023 (Arduino) para 0-32768 (vJoy)
+                int vJoyValue = pos * 32; 
+                //Console.WriteLine($"Y (Desliz A): {vJoyValue}");
+                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Y, vJoyValue);
+            }
+        }
+        else if (eixo.StartsWith("Z:"))
+        {
+            if (int.TryParse(eixo.Substring(2), out int pos))
+            {
+                // Mapeia de 0-1023 (Arduino) para 0-32768 (vJoy)
+                int vJoyValue = pos * 32; 
+                //Console.WriteLine($"Z (Desliz B): {vJoyValue}");
+                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Z, vJoyValue);
+            }
+        }
+    }
+}
 
         /// <summary>
         /// Captura o FFB real gerado pelo vJoy e envia via Serial para o STM32.
@@ -66,5 +95,11 @@ namespace vJoyBridge
             
             Console.WriteLine($"[Bridge -> STM32] FFB Enviado: {ffbCommand.Trim()}");
         }
+
+// Cole esta função na sua classe C#
+        public int Remap(int value, int from1, int to1, int from2, int to2) {
+            return (value - from1) * (to2 - from2) / (to1 - from1) + from2;
+        }
+
     }
 }

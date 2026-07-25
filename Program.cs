@@ -19,7 +19,7 @@ namespace vJoyBridge
             try
             {
                 // 3. Inicia o sistema
-                bridge.Start("COM4", 115200);
+                bridge.Start("COM6", 115200);
 
                 Console.WriteLine("\nSistema rodando. Pressione [ESC] para sair.\n");
                 
