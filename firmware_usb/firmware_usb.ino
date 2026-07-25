@@ -1,3 +1,5 @@
+//Usar a configuração de placa STM32F1xx -> STM32F103C6/fake
+
 #include <USBComposite.h>
 
 #define PIN_ENC_CLK PA0
