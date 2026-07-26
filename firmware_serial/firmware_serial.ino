@@ -26,7 +26,7 @@
 
 // Pinos da Ponte H MX1616
 #define MOTOR_IN1 PA3
-#define MOTOR_IN2 PA3
+#define MOTOR_IN2 PA2
 
 #define LED_PIN PC13
 

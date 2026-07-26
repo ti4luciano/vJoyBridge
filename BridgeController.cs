@@ -53,7 +53,7 @@ private void HandleSerialMessage(string message)
         {
             if (int.TryParse(eixo.Substring(2), out int pos))
             {
-                 Console.WriteLine($"X (Encoder): {pos}");
+                 //Console.WriteLine($"X (Encoder): {pos}");
                 _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, pos);
             }
         }
