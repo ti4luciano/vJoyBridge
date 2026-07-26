@@ -22,8 +22,8 @@
 #include <USBComposite.h>
 #include <FFBCommon.h>
 
-#define PIN_ENC_CLK PA0
-#define PIN_ENC_DT  PA1
+#define PIN_ENC_CLK PA1
+#define PIN_ENC_DT  PA0
 #define PIN_POT_Y   PB1
 #define PIN_POT_Z   PB0
 #define PIN_LED     PC13

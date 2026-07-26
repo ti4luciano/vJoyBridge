@@ -19,26 +19,26 @@
 // ==========================================================
 // Configuração de Pinos
 // ==========================================================
-#define ENCODER_PIN_A PA0
-#define ENCODER_PIN_B PA1
-#define DESLIZ_A      PB1
-#define DESLIZ_B      PB0
+#define PIN_ENC_CLK    PA1
+#define PIN_ENC_DT     PA0
+#define PIN_POT_Y      PB1
+#define PIN_POT_Z      PB0
 
 // Pinos da Ponte H MX1616
-#define MOTOR_IN1 PA2
+#define MOTOR_IN1 PA3
 #define MOTOR_IN2 PA3
 
 #define LED_PIN PC13
 
-#define LIMITE_ESQUERDO -162
-#define LIMITE_DIREITO   162
+#define LIMITE_MIN 0
+#define LIMITE_MAX 512
 
 // ==========================================================
 // Objetos compartilhados (FFBCommon)
 // ==========================================================
-QuadratureEncoder encoder(ENCODER_PIN_A, ENCODER_PIN_B, LIMITE_ESQUERDO, LIMITE_DIREITO);
-AnalogAxis axisY(DESLIZ_A);
-AnalogAxis axisZ(DESLIZ_B);
+QuadratureEncoder encoder(PIN_ENC_CLK, PIN_ENC_DT, LIMITE_MIN, LIMITE_MAX);
+AnalogAxis axisY(PIN_POT_Y);
+AnalogAxis axisZ(PIN_POT_Z);
 StatusLed  statusLed(LED_PIN);
 
 // ==========================================================
