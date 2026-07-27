@@ -53,31 +53,24 @@ private void HandleSerialMessage(string message)
         {
             if (int.TryParse(eixo.Substring(2), out int pos))
             {
-                int posLimitada = pos; // O STM32 já está limitando, mas não custa garantir
-// Mapeia de -162 a 162 para 0 a 32768
-                int vJoyValue = Remap(posLimitada, -162, 162, 0, 32768);
-                 Console.WriteLine($"X (Encoder): {vJoyValue}");
-                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, vJoyValue);
+                 //Console.WriteLine($"X (Encoder): {pos}");
+                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, pos);
             }
         }
         else if (eixo.StartsWith("Y:"))
         {
             if (int.TryParse(eixo.Substring(2), out int pos))
             {
-                // Mapeia de 0-1023 (Arduino) para 0-32768 (vJoy)
-                int vJoyValue = pos * 32; 
                 //Console.WriteLine($"Y (Desliz A): {vJoyValue}");
-                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Y, vJoyValue);
+                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Y, pos);
             }
         }
         else if (eixo.StartsWith("Z:"))
         {
             if (int.TryParse(eixo.Substring(2), out int pos))
             {
-                // Mapeia de 0-1023 (Arduino) para 0-32768 (vJoy)
-                int vJoyValue = pos * 32; 
                 //Console.WriteLine($"Z (Desliz B): {vJoyValue}");
-                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Z, vJoyValue);
+                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Z, pos);
             }
         }
     }
