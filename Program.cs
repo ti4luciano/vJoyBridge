@@ -9,20 +9,24 @@ namespace vJoyBridge
         {
             Console.WriteLine("=== Iniciando vJoy - STM32 Bridge ===");
 
+            // 0. Carrega (ou cria, se ausente) o config.json ao lado do executável
+            AppConfig config = ConfigService.Load();
+
             // 1. Instanciação das Dependências (Manual Dependency Injection)
-            ISerialService serialService = new SerialService();
-            IJoystickService vJoyService = new VJoyService();
+            ILogService logService = new LogService(config.Logging);
+            ISerialService serialService = new SerialService(logService);
+            IJoystickService vJoyService = new VJoyService(logService, config.ForceFeedback);
 
             // 2. Injeta as dependências no controlador
-            BridgeController bridge = new BridgeController(serialService, vJoyService, deviceId: 1);
+            BridgeController bridge = new BridgeController(serialService, vJoyService, logService, config.VJoy.DeviceId);
 
             try
             {
-                // 3. Inicia o sistema
-                bridge.Start("COM6", 115200);
+                // 3. Inicia o sistema usando porta/baud rate do config.json
+                bridge.Start(config.Serial.PortName, config.Serial.BaudRate);
 
                 Console.WriteLine("\nSistema rodando. Pressione [ESC] para sair.\n");
-                
+
                 // Mantém o console aberto até pressionar ESC
                 while (Console.ReadKey(true).Key != ConsoleKey.Escape)
                 {
@@ -31,7 +35,7 @@ namespace vJoyBridge
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Fatal] Erro não tratado: {ex.Message}");
+                logService.Error(LogPoint.General, $"[Fatal] Erro não tratado: {ex.Message}");
             }
             finally
             {

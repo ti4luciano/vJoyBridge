@@ -1,0 +1,23 @@
+{
+  "VJoy": {
+    "DeviceId": 1
+  },
+  "Serial": {
+    "PortName": "COM6",
+    "BaudRate": 115200
+  },
+  "Logging": {
+    "Enabled": true,
+    "Level": "Info",
+    "LogToConsole": true,
+    "LogToFile": true,
+    "LogFilePath": "vjoybridge.log",
+    "Points": {
+      "SerialToVJoy": false,
+      "VJoyEvents": true
+    }
+  },
+  "ForceFeedback": {
+    "MagnitudeMultiplier": 1.0
+  }
+}

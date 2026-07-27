@@ -11,9 +11,15 @@ namespace vJoyBridge
     {
         public event Action<string> OnMessageReceived;
 
+        private readonly ILogService _log;
         private SerialPort _serialPort;
         private Thread _readThread;
         private bool _isRunning;
+
+        public SerialService(ILogService log)
+        {
+            _log = log;
+        }
 
         public void Connect(string portName, int baudRate)
         {
@@ -26,12 +32,12 @@ namespace vJoyBridge
 
             _serialPort.Open();
             _serialPort.DiscardInBuffer(); // Limpa lixo residual do buffer
-            
+
             _isRunning = true;
             _readThread = new Thread(ReadLoop) { IsBackground = true };
             _readThread.Start();
 
-            Console.WriteLine($"[Serial] Conectado à porta {portName} a {baudRate} bps.");
+            _log.Info(LogPoint.General, $"[Serial] Conectado à porta {portName} a {baudRate} bps.");
         }
 
         public void SendMessage(string message)
@@ -46,11 +52,11 @@ namespace vJoyBridge
         {
             _isRunning = false;
             _readThread?.Join(500); // Aguarda até 500ms para a thread fechar
-            
+
             if (_serialPort != null && _serialPort.IsOpen)
             {
                 _serialPort.Close();
-                Console.WriteLine("[Serial] Porta fechada.");
+                _log.Info(LogPoint.General, "[Serial] Porta fechada.");
             }
         }
 
@@ -81,8 +87,8 @@ namespace vJoyBridge
                 catch (TimeoutException) { /* Timeout esperado do ReadLine */ }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[Serial] Erro na leitura: {ex.Message}");
-                    Thread.Sleep(100); 
+                    _log.Error(LogPoint.General, $"[Serial] Erro na leitura: {ex.Message}");
+                    Thread.Sleep(100);
                 }
             }
         }

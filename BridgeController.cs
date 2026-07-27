@@ -7,12 +7,14 @@ namespace vJoyBridge
     {
         private readonly ISerialService _serialService;
         private readonly IJoystickService _vJoyService;
+        private readonly ILogService _log;
         private readonly uint _deviceId;
 
-        public BridgeController(ISerialService serialService, IJoystickService vJoyService, uint deviceId = 1)
+        public BridgeController(ISerialService serialService, IJoystickService vJoyService, ILogService log, uint deviceId = 1)
         {
             _serialService = serialService;
             _vJoyService = vJoyService;
+            _log = log;
             _deviceId = deviceId;
 
             // Inscrição: Posição do STM32 -> vJoy
@@ -27,7 +29,7 @@ namespace vJoyBridge
             if (_vJoyService.Initialize(_deviceId))
             {
                 _serialService.Connect(portName, baudRate);
-                Console.WriteLine("[Bridge] Pronto para traduzir posição e FFB.");
+                _log.Info(LogPoint.General, "[Bridge] Pronto para traduzir posição e FFB.");
             }
         }
 
@@ -35,46 +37,53 @@ namespace vJoyBridge
         {
             _serialService.Disconnect();
             _vJoyService.Shutdown(_deviceId);
-            Console.WriteLine("[Bridge] Encerrado.");
+            _log.Info(LogPoint.General, "[Bridge] Encerrado.");
         }
 
         /// <summary>
         /// Processa a rotação lida no STM32 e atualiza o eixo do vJoy.
+        /// Ponto de log: SerialToVJoy.
         /// </summary>
-private void HandleSerialMessage(string message)
-{
-    // Divide a string onde houver espaço. 
-    // Ex: "X:52 Y:761 Z:1023" vira um array ["X:52", "Y:761", "Z:1023"]
-    string[] eixos = message.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        private void HandleSerialMessage(string message)
+        {
+            // Divide a string onde houver espaço.
+            // Ex: "X:52 Y:761 Z:1023" vira um array ["X:52", "Y:761", "Z:1023"]
+            string[] eixos = message.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
-    foreach (string eixo in eixos)
-    {
-        if (eixo.StartsWith("X:"))
-        {
-            if (int.TryParse(eixo.Substring(2), out int pos))
+            _log.Debug(LogPoint.SerialToVJoy, $"[Serial -> vJoy] Mensagem recebida: \"{message}\"");
+
+            foreach (string eixo in eixos)
             {
-                 //Console.WriteLine($"X (Encoder): {pos}");
-                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, pos);
+                if (eixo.StartsWith("X:"))
+                {
+                    if (int.TryParse(eixo.Substring(2), out int pos))
+                    {
+                        _log.Debug(LogPoint.SerialToVJoy, $"[Serial -> vJoy] X (Encoder): {pos}");
+                        _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, pos);
+                    }
+                }
+                else if (eixo.StartsWith("Y:"))
+                {
+                    if (int.TryParse(eixo.Substring(2), out int pos))
+                    {
+                        _log.Debug(LogPoint.SerialToVJoy, $"[Serial -> vJoy] Y (Desliz A): {pos}");
+                        _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Y, pos);
+                    }
+                }
+                else if (eixo.StartsWith("Z:"))
+                {
+                    if (int.TryParse(eixo.Substring(2), out int pos))
+                    {
+                        _log.Debug(LogPoint.SerialToVJoy, $"[Serial -> vJoy] Z (Desliz B): {pos}");
+                        _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Z, pos);
+                    }
+                }
+                else
+                {
+                    _log.Warning(LogPoint.SerialToVJoy, $"[Serial -> vJoy] Token não reconhecido: \"{eixo}\"");
+                }
             }
         }
-        else if (eixo.StartsWith("Y:"))
-        {
-            if (int.TryParse(eixo.Substring(2), out int pos))
-            {
-                //Console.WriteLine($"Y (Desliz A): {vJoyValue}");
-                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Y, pos);
-            }
-        }
-        else if (eixo.StartsWith("Z:"))
-        {
-            if (int.TryParse(eixo.Substring(2), out int pos))
-            {
-                //Console.WriteLine($"Z (Desliz B): {vJoyValue}");
-                _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_Z, pos);
-            }
-        }
-    }
-}
 
         /// <summary>
         /// Captura o FFB real gerado pelo vJoy e envia via Serial para o STM32.
@@ -83,14 +92,14 @@ private void HandleSerialMessage(string message)
         {
             // Monta a mensagem no padrão "F:{pwm},{dir}\n"
             string ffbCommand = $"F:{pwm},{direction}\n";
-            
+
             _serialService.SendMessage(ffbCommand);
-            
-            Console.WriteLine($"[Bridge -> STM32] FFB Enviado: {ffbCommand.Trim()}");
+
+            _log.Debug(LogPoint.VJoyEvents, $"[Bridge -> STM32] FFB Enviado: {ffbCommand.Trim()}");
         }
 
-// Cole esta função na sua classe C#
-        public int Remap(int value, int from1, int to1, int from2, int to2) {
+        public int Remap(int value, int from1, int to1, int from2, int to2)
+        {
             return (value - from1) * (to2 - from2) / (to1 - from1) + from2;
         }
 
