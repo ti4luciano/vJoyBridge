@@ -14,11 +14,11 @@ namespace vJoyBridge
 
             // 1. Instanciação das Dependências (Manual Dependency Injection)
             ILogService logService = new LogService(config.Logging);
-            ISerialService serialService = new SerialService(logService);
+            ISerialService serialService = new SerialService(logService, config.Serial.Reconnect);
             IJoystickService vJoyService = new VJoyService(logService, config.ForceFeedback);
 
             // 2. Injeta as dependências no controlador
-            BridgeController bridge = new BridgeController(serialService, vJoyService, logService, config.VJoy.DeviceId);
+            BridgeController bridge = new BridgeController(serialService, vJoyService, logService, config.VJoy.AxisX, config.VJoy.DeviceId);
 
             try
             {

@@ -8,13 +8,15 @@ namespace vJoyBridge
         private readonly ISerialService _serialService;
         private readonly IJoystickService _vJoyService;
         private readonly ILogService _log;
+        private readonly AxisRangeConfig _axisXConfig;
         private readonly uint _deviceId;
 
-        public BridgeController(ISerialService serialService, IJoystickService vJoyService, ILogService log, uint deviceId = 1)
+        public BridgeController(ISerialService serialService, IJoystickService vJoyService, ILogService log, AxisRangeConfig axisXConfig, uint deviceId = 1)
         {
             _serialService = serialService;
             _vJoyService = vJoyService;
             _log = log;
+            _axisXConfig = axisXConfig;
             _deviceId = deviceId;
 
             // Inscrição: Posição do STM32 -> vJoy
@@ -56,10 +58,19 @@ namespace vJoyBridge
             {
                 if (eixo.StartsWith("X:"))
                 {
-                    if (int.TryParse(eixo.Substring(2), out int pos))
+                    if (int.TryParse(eixo.Substring(2), out int rawPos))
                     {
-                        _log.Debug(LogPoint.SerialToVJoy, $"[Serial -> vJoy] X (Encoder): {pos}");
-                        _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, pos);
+                        // O encoder do volante hoje produz valores em [AxisX.RawMin, AxisX.RawMax]
+                        // (configurável em config.json). Remapeamos para a faixa lógica do vJoy
+                        // (0..32767) antes de enviar — isso também é o que dá precisão correta
+                        // para o cálculo de Spring/Damper/Inertia no VJoyService.
+                        int clamped = Math.Clamp(rawPos, _axisXConfig.RawMin, _axisXConfig.RawMax);
+                        int remapped = Remap(clamped, _axisXConfig.RawMin, _axisXConfig.RawMax, 0, 32767);
+
+                        _log.Debug(LogPoint.SerialToVJoy,
+                            $"[Serial -> vJoy] X (Encoder): bruto={rawPos} (faixa {_axisXConfig.RawMin}-{_axisXConfig.RawMax}) -> vJoy={remapped}");
+
+                        _vJoyService.SetAxis(_deviceId, HID_USAGES.HID_USAGE_X, remapped);
                     }
                 }
                 else if (eixo.StartsWith("Y:"))
@@ -98,9 +109,13 @@ namespace vJoyBridge
             _log.Debug(LogPoint.VJoyEvents, $"[Bridge -> STM32] FFB Enviado: {ffbCommand.Trim()}");
         }
 
+        /// <summary>
+        /// Remapeia linearmente um valor de uma faixa [from1, to1] para [from2, to2].
+        /// </summary>
         public int Remap(int value, int from1, int to1, int from2, int to2)
         {
-            return (value - from1) * (to2 - from2) / (to1 - from1) + from2;
+            if (to1 == from1) return from2; // evita divisão por zero se a faixa bruta estiver mal configurada
+            return (int)Math.Round((double)(value - from1) * (to2 - from2) / (to1 - from1) + from2);
         }
 
     }
