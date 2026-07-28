@@ -1,9 +1,3 @@
-/*
- * O envio dos botões está correto: 
- * - No modo USB, o bitmask é desempacotado via bitshift (btns >> i) & 0x01.
- * - No modo Serial, o byte (0-255) é enviado e a bridge (C#) deve decodificá-lo.
- */
-
 #include <Arduino.h>
 #include <USBComposite.h>
 
