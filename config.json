@@ -16,8 +16,8 @@
     }
   },
   "Logging": {
-    "Enabled": true,
-    "Level": "Debug",
+    "Enabled": false,
+    "Level": "Info",
     "LogToConsole": true,
     "LogToFile": true,
     "LogFilePath": "vjoybridge.log",
