@@ -1,0 +1,34 @@
+{
+  "VJoy": {
+    "DeviceId": 1,
+    "AxisX": {
+      "RawMin": 0,
+      "RawMax": 512
+    }
+  },
+  "Serial": {
+    "PortName": "COM6",
+    "BaudRate": 115200,
+    "Reconnect": {
+      "Enabled": true,
+      "MaxAttempts": 5,
+      "DelayMs": 3000
+    }
+  },
+  "Logging": {
+    "Enabled": true,
+    "Level": "Info",
+    "LogToConsole": true,
+    "LogToFile": true,
+    "LogFilePath": "vjoybridge.log",
+    "Points": {
+      "SerialToVJoy": false,
+      "VJoyEvents": true
+    }
+  },
+  "ForceFeedback": {
+    "MagnitudeMultiplier": 1.0,
+    "VelocityScale": 1.0,
+    "AccelerationScale": 1.0
+  }
+}
