@@ -31,13 +31,36 @@ namespace vJoyBridge
             _portName = portName;
             _baudRate = baudRate;
 
-            OpenPort(portName, baudRate);
+            // Define como true logo no início, pois o HandleReconnection precisa
+            // dessa flag ativa para iterar pelas tentativas caso a conexão inicial falhe.
+            _isRunning = true; 
 
-            _isRunning = true;
-            _readThread = new Thread(ReadLoop) { IsBackground = true };
-            _readThread.Start();
-
-            _log.Info(LogPoint.General, $"[Serial] Connected to {portName} @ {baudRate} bps.");
+            try
+            {
+                OpenPort(portName, baudRate);
+                _log.Info(LogPoint.General, $"[Serial] Connected to {portName} @ {baudRate} bps.");
+                
+                _readThread = new Thread(ReadLoop) { IsBackground = true };
+                _readThread.Start();
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(LogPoint.General, $"[Serial] Initial connection failed: {ex.Message}");
+                
+                // Direciona para as reconexões caso a primeira falhe
+                if (HandleReconnection())
+                {
+                    _readThread = new Thread(ReadLoop) { IsBackground = true };
+                    _readThread.Start();
+                }
+                else
+                {
+                    // Encerra o programa após falhar todas as tentativas
+                    _isRunning = false;
+                    _log.Error(LogPoint.General, "[Serial] Reconnection attempts exhausted. Terminating program.");
+                    Environment.Exit(1);
+                }
+            }
         }
 
         public void SendMessage(string message)
@@ -74,6 +97,9 @@ namespace vJoyBridge
 
             _serialPort.Open();
             _serialPort.DiscardInBuffer();
+
+            // Handshake: envia o caractere 'H' assim que a conexão for estabelecida
+            _serialPort.Write("H");
         }
 
         private void ClosePortSafely()

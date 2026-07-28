@@ -248,7 +248,7 @@ namespace vJoyBridge
                 foreach (var state in _conditionEffects.Values)
                 {
                     if (!state.Active) continue;
-                    (activeEffects ??= newList<(FfbCondition, FFBEType)>()).Add((state.Condition, state.EffectType));
+                    (activeEffects ??= new List<(FfbCondition, FFBEType)>()).Add((state.Condition, state.EffectType));
                 }
             }
 
