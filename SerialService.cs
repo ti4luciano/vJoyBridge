@@ -182,6 +182,7 @@ namespace vJoyBridge
             }
 
             _log.Error(LogPoint.General, "[Serial] Reconnection attempts exhausted.");
+            Environment.Exit(1);
             return false;
         }
     }
