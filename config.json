@@ -16,7 +16,7 @@
     }
   },
   "Logging": {
-    "Enabled": true,
+    "Enabled": false,
     "Level": "Info",
     "LogToConsole": true,
     "LogToFile": true,

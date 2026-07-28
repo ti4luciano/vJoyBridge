@@ -1,3 +1,6 @@
+// ============================================================================
+// SerialService.cs
+// ============================================================================
 using System;
 using System.IO;
 using System.IO.Ports;
@@ -5,21 +8,15 @@ using System.Threading;
 
 namespace vJoyBridge
 {
-    /// <summary>
-    /// Implementação robusta de comunicação serial utilizando Thread dedicada (Polling),
-    /// com reconexão automática configurável caso a porta caia/seja desconectada.
-    /// </summary>
     public class SerialService : ISerialService
     {
         public event Action<string> OnMessageReceived;
 
         private readonly ILogService _log;
         private readonly ReconnectConfig _reconnectConfig;
-
         private SerialPort _serialPort;
         private Thread _readThread;
         private volatile bool _isRunning;
-
         private string _portName;
         private int _baudRate;
 
@@ -34,13 +31,36 @@ namespace vJoyBridge
             _portName = portName;
             _baudRate = baudRate;
 
-            OpenPort(portName, baudRate);
+            // Define como true logo no início, pois o HandleReconnection precisa
+            // dessa flag ativa para iterar pelas tentativas caso a conexão inicial falhe.
+            _isRunning = true; 
 
-            _isRunning = true;
-            _readThread = new Thread(ReadLoop) { IsBackground = true };
-            _readThread.Start();
-
-            _log.Info(LogPoint.General, $"[Serial] Conectado à porta {portName} a {baudRate} bps.");
+            try
+            {
+                OpenPort(portName, baudRate);
+                _log.Info(LogPoint.General, $"[Serial] Connected to {portName} @ {baudRate} bps.");
+                
+                _readThread = new Thread(ReadLoop) { IsBackground = true };
+                _readThread.Start();
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(LogPoint.General, $"[Serial] Initial connection failed: {ex.Message}");
+                
+                // Direciona para as reconexões caso a primeira falhe
+                if (HandleReconnection())
+                {
+                    _readThread = new Thread(ReadLoop) { IsBackground = true };
+                    _readThread.Start();
+                }
+                else
+                {
+                    // Encerra o programa após falhar todas as tentativas
+                    _isRunning = false;
+                    _log.Error(LogPoint.General, "[Serial] Reconnection attempts exhausted. Terminating program.");
+                    Environment.Exit(1);
+                }
+            }
         }
 
         public void SendMessage(string message)
@@ -54,30 +74,32 @@ namespace vJoyBridge
             }
             catch (Exception ex)
             {
-                _log.Warning(LogPoint.General, $"[Serial] Falha ao enviar mensagem (porta pode estar desconectada): {ex.Message}");
+                _log.Warning(LogPoint.General, $"[Serial] Tx failure: {ex.Message}");
             }
         }
 
         public void Disconnect()
         {
             _isRunning = false;
-            _readThread?.Join(500); // Aguarda até 500ms para a thread fechar
-
+            _readThread?.Join(500);
             ClosePortSafely();
-            _log.Info(LogPoint.General, "[Serial] Porta fechada.");
+            _log.Info(LogPoint.General, "[Serial] Closed.");
         }
 
         private void OpenPort(string portName, int baudRate)
         {
             _serialPort = new SerialPort(portName, baudRate)
             {
-                DtrEnable = true, // Essencial para Arduino/STM32 via USB
+                DtrEnable = true,
                 ReadTimeout = 50,
                 NewLine = "\n"
             };
 
             _serialPort.Open();
-            _serialPort.DiscardInBuffer(); // Limpa lixo residual do buffer
+            _serialPort.DiscardInBuffer();
+
+            // Handshake: envia o caractere 'H' assim que a conexão for estabelecida
+            _serialPort.Write("H");
         }
 
         private void ClosePortSafely()
@@ -89,16 +111,9 @@ namespace vJoyBridge
                     _serialPort.Close();
                 }
             }
-            catch
-            {
-                // Ignorado: a porta pode já estar em estado inválido (ex: dispositivo removido).
-            }
+            catch { }
         }
 
-        /// <summary>
-        /// Loop de alta performance para leitura contínua da porta serial.
-        /// Em caso de desconexão inesperada, aciona a rotina de reconexão (se habilitada).
-        /// </summary>
         private void ReadLoop()
         {
             if (_serialPort == null) return;
@@ -113,79 +128,61 @@ namespace vJoyBridge
                         continue;
                     }
 
-                    string linha = _serialPort.ReadLine();
-                    if (!string.IsNullOrWhiteSpace(linha))
+                    string line = _serialPort.ReadLine();
+                    if (!string.IsNullOrWhiteSpace(line))
                     {
-                        // Dispara o evento notificando o controlador
-                        OnMessageReceived?.Invoke(linha.Trim());
+                        OnMessageReceived?.Invoke(line.Trim());
                     }
                 }
-                catch (TimeoutException)
-                {
-                    /* Timeout esperado do ReadLine */
-                }
+                catch (TimeoutException) { }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
                 {
-                    // Casos típicos de porta caída: cabo desconectado, dispositivo removido,
-                    // porta fechada externamente, etc.
                     if (!_isRunning) break;
-
-                    _log.Warning(LogPoint.General, $"[Serial] Conexão perdida com {_portName}: {ex.Message}");
+                    _log.Warning(LogPoint.General, $"[Serial] Connection lost on {_portName}: {ex.Message}");
                     ClosePortSafely();
 
                     if (!HandleReconnection())
                     {
-                        // Reconexão desabilitada ou tentativas esgotadas: encerra a thread de leitura.
                         _isRunning = false;
                         break;
                     }
                 }
                 catch (Exception ex)
                 {
-                    _log.Error(LogPoint.General, $"[Serial] Erro na leitura: {ex.Message}");
+                    _log.Error(LogPoint.General, $"[Serial] Read error: {ex.Message}");
                     Thread.Sleep(100);
                 }
             }
         }
 
-        /// <summary>
-        /// Tenta reabrir a porta serial de acordo com o config.json (Serial.Reconnect).
-        /// Retorna true se reconectou com sucesso, false se desistiu.
-        /// </summary>
         private bool HandleReconnection()
         {
-            if (!_reconnectConfig.Enabled)
-            {
-                _log.Error(LogPoint.General, "[Serial] Reconexão automática desabilitada no config.json. Encerrando leitura.");
-                return false;
-            }
+            if (!_reconnectConfig.Enabled) return false;
 
-            int maxAttempts = _reconnectConfig.MaxAttempts; // 0 = tentativas ilimitadas
+            int maxAttempts = _reconnectConfig.MaxAttempts;
             int attempt = 0;
 
             while (_isRunning && (maxAttempts <= 0 || attempt < maxAttempts))
             {
                 attempt++;
-                string limiteStr = maxAttempts > 0 ? $"/{maxAttempts}" : " (ilimitado)";
-                _log.Info(LogPoint.General, $"[Serial] Tentativa de reconexão {attempt}{limiteStr} em {_reconnectConfig.DelayMs}ms...");
-
                 Thread.Sleep(_reconnectConfig.DelayMs);
 
-                if (!_isRunning) return false; // Disconnect() foi chamado enquanto esperávamos
+                if (!_isRunning) return false;
 
                 try
                 {
                     OpenPort(_portName, _baudRate);
-                    _log.Info(LogPoint.General, $"[Serial] Reconectado à porta {_portName} com sucesso.");
+                    _log.Info(LogPoint.General, $"[Serial] Reconnected to {_portName}.");
                     return true;
                 }
                 catch (Exception ex)
                 {
-                    _log.Warning(LogPoint.General, $"[Serial] Falha na tentativa {attempt}: {ex.Message}");
+                    _log.Warning(LogPoint.General, $"[Serial] Reconnect attempt {attempt} failed: {ex.Message}");
                 }
             }
 
-            _log.Error(LogPoint.General, "[Serial] Número máximo de tentativas de reconexão atingido. Desistindo.");
+            _log.Error(LogPoint.General, "[Serial] Reconnection attempts exhausted.");
+            Environment.Exit(1);
             return false;
         }
     }
