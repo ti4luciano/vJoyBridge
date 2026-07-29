@@ -64,5 +64,20 @@ namespace vJoyBridge
         {
             _log.Warning(LogPoint.VJoyEvents, $"[FFB Unhandled] Unrecognized packet type: {packetType} (0x{packet.ToInt64():X})");
         }
+
+        public void ProcessPeriodicEffect(byte blockIndex, FFBEType effectType, uint magnitude, int offset, uint phase, uint period)
+        {
+            _log.Info(LogPoint.VJoyEvents, $"[FFB Periodic] Block: {blockIndex} | Type: {effectType} | Magnitude: {magnitude} | Offset: {offset} | Phase: {phase} | Period: {period}");
+        }
+
+        public void LogEffectBlockAllocated(byte blockIndex)
+        {
+            _log.Info(LogPoint.VJoyEvents, $"[FFB Block] New effect block allocated: {blockIndex}");
+        }
+
+        public void LogEffectBlockFreed(byte blockIndex)
+        {
+            _log.Info(LogPoint.VJoyEvents, $"[FFB Block] Effect block freed: {blockIndex} -> clearing cached state");
+        }
     }
 }
