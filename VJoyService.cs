@@ -60,6 +60,11 @@ namespace vJoyBridge
         private long _lastSampleTimestamp;
         private bool _hasPreviousSample;
 
+        // Global FFB gain (0-255) reported via PT_GAINREP. Scales every dispatched force,
+        // since the device applies this on top of whatever any individual effect requests.
+        // Defaults to 255 (100%), which is also what a device reset (CTRL_DEVRST) restores.
+        private volatile byte _globalGain = 255;
+
         // Periodic effects (square/sine/triangle/sawtooth) are time-based waveforms and must keep
         // producing force even when the axis isn't moving and no new FFB packet arrives, so we
         // tick the recalculation on a timer instead of relying solely on packet/axis events.
@@ -153,7 +158,9 @@ namespace vJoyBridge
                     FFB_CTRL control = 0;
                     if (_joystick?.Ffb_h_DevCtrl(packet, ref control) == ERROR_SUCCESS)
                     {
-                        _ffbHandler.ProcessDeviceControl(control, DispatchFfb, () => { lock (_ffbLock) _conditionEffects.Clear(); });
+                        _ffbHandler.ProcessDeviceControl(control, DispatchFfb,
+                            resetConditionEffects: () => { lock (_ffbLock) _conditionEffects.Clear(); },
+                            resetGain: () => _globalGain = 255);
                     }
                     break;
 
@@ -237,8 +244,8 @@ namespace vJoyBridge
                     break;
 
                 case FFBPType.PT_NEWEFREP:
-                    int newBlockIndex = -1;
-                    if (_joystick?.Ffb_h_EBI(packet, ref newBlockIndex) == ERROR_SUCCESS && newBlockIndex >= 0)
+                    uint newBlockIndex = 0;
+                    if (_joystick?.Ffb_h_EBI(packet, ref newBlockIndex) == ERROR_SUCCESS)
                     {
                         // The device can reuse a block index that was previously freed. Wipe any
                         // stale cached state (old Active flag, condition, or periodic params) so it
@@ -252,8 +259,8 @@ namespace vJoyBridge
                     break;
 
                 case FFBPType.PT_BLKFRREP:
-                    int freedBlockIndex = -1;
-                    if (_joystick?.Ffb_h_EBI(packet, ref freedBlockIndex) == ERROR_SUCCESS && freedBlockIndex >= 0)
+                    uint freedBlockIndex = 0;
+                    if (_joystick?.Ffb_h_EBI(packet, ref freedBlockIndex) == ERROR_SUCCESS)
                     {
                         // Stop and forget this block immediately. If it stayed in the dictionary
                         // while still marked Active, it kept contributing force in
@@ -268,6 +275,19 @@ namespace vJoyBridge
                     }
                     break;
 
+                case FFBPType.PT_GAINREP:
+                    byte gain = 255;
+                    if (_joystick?.Ffb_h_DevGain(packet, ref gain) == ERROR_SUCCESS)
+                    {
+                        _globalGain = gain;
+                        _ffbHandler.ProcessDeviceGain(gain);
+
+                        // Re-apply immediately to whatever effect is currently running, instead of
+                        // waiting for the next axis sample or FFB packet to pick up the new gain.
+                        RecalculateConditionEffects();
+                    }
+                    break;
+
                 default:
                     _ffbHandler.LogUnhandledPacket(packetType, packet);
                     break;
@@ -276,7 +296,10 @@ namespace vJoyBridge
 
         private void DispatchFfb(int pwm, int direction)
         {
-            OnForceFeedbackReceived?.Invoke(pwm, direction);
+            byte gain = _globalGain;
+            int scaledPwm = gain == 255 ? pwm : Math.Clamp((int)Math.Round(pwm * (gain / 255.0)), 0, 255);
+
+            OnForceFeedbackReceived?.Invoke(scaledPwm, direction);
         }
 
         private ConditionEffectState GetOrCreateConditionState(byte blockIndex)
