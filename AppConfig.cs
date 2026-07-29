@@ -39,7 +39,7 @@ namespace vJoyBridge
 
     public class LoggingConfig
     {
-        public bool Enabled { get; set; } = true;
+        public bool Enabled { get; set; } = false;
         public LogLevel Level { get; set; } = LogLevel.Info;
         public bool LogToConsole { get; set; } = true;
         public bool LogToFile { get; set; } = true;
