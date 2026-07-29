@@ -1,82 +1,76 @@
-// ============================================================================
-// VJoyService.cs
-// ============================================================================
 #nullable enable
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using vJoyInterfaceWrap;
 using FfbCondition = vJoyInterfaceWrap.vJoy.FFB_EFF_COND;
 
 namespace vJoyBridge
 {
+    /// <summary>
+    /// Implementação concreta do serviço do vJoy usando o Wrapper nativo e chamadas diretas P/Invoke.
+    /// Resolve incompatibilidades clássicas de FFB presentes em wrappers desatualizados.
+    /// </summary>
     public class VJoyService : IJoystickService
     {
         public event Action<int, int>? OnForceFeedbackReceived;
 
-        private const uint ERROR_SUCCESS = 0;
         private readonly ILogService _log;
         private readonly ForceFeedbackConfig _ffbConfig;
-        private readonly AxisRangeConfig _axisConfig;
         private readonly ForceFeedbackHandler _ffbHandler;
         private vJoyInterfaceWrap.vJoy? _joystick;
 
-        private class ConditionEffectState
+        private const uint ERROR_SUCCESS = 0;
+
+        /// <summary>
+        /// Representa o estado completo de um bloco de efeito FFB no vJoy.
+        /// </summary>
+        private class EffectBlockState
         {
-            public FfbCondition Condition;
+            public byte BlockIndex;
             public FFBEType EffectType = FFBEType.ET_NONE;
             public bool Active;
 
-            // Parameters for periodic effects (square/sine/triangle/sawtooth), populated from PT_PRIDREP.
+            // Efeito Constante
+            public int ConstantMagnitude;
+
+            // Efeito de Condição (Spring, Damper, Friction, Inertia)
+            public FfbCondition Condition;
+
+            // Efeito Periódico (Sine, Square, Triangle, Sawtooth)
             public uint PeriodicMagnitude;
             public int PeriodicOffset;
             public uint PeriodicPhase;
             public uint PeriodicPeriod;
 
-            // Timestamp (Stopwatch ticks) of the last time this block transitioned to Active,
-            // used as the time origin for periodic waveform playback.
-            public long ActivationTimestamp;
-        }
-
-        // Snapshot of an active effect's parameters, taken while holding _ffbLock so the
-        // subsequent force calculation can run lock-free.
-        private readonly struct EffectSnapshot
-        {
-            public FFBEType Type { get; init; }
-            public FfbCondition Condition { get; init; }
-            public uint PeriodicMagnitude { get; init; }
-            public int PeriodicOffset { get; init; }
-            public uint PeriodicPhase { get; init; }
-            public uint PeriodicPeriod { get; init; }
-            public long ActivationTimestamp { get; init; }
+            // Cronômetro para cálculo do tempo decorrido em efeitos periódicos
+            public readonly Stopwatch Stopwatch = new();
         }
 
         private readonly object _ffbLock = new();
-        private readonly Dictionary<byte, ConditionEffectState> _conditionEffects = new();
+        private readonly Dictionary<byte, EffectBlockState> _effects = new();
+        private byte _globalGain = 255; // 0..255 (Padrão 100%)
 
+        // --- Cinemática do eixo X (volante) ---
+        private int _lastAxisPositionX = 16384; // Centro (0..32767)
         private double _lastNormalizedPos;
         private double _lastVelocity;
         private double _lastAcceleration;
         private long _lastSampleTimestamp;
         private bool _hasPreviousSample;
 
-        // Global FFB gain (0-255) reported via PT_GAINREP. Scales every dispatched force,
-        // since the device applies this on top of whatever any individual effect requests.
-        // Defaults to 255 (100%), which is also what a device reset (CTRL_DEVRST) restores.
-        private volatile byte _globalGain = 255;
+        // --- Timer para atualização contínua de efeitos periódicos (10ms / 100Hz) ---
+        private readonly Timer _periodicTimer;
 
-        // Periodic effects (square/sine/triangle/sawtooth) are time-based waveforms and must keep
-        // producing force even when the axis isn't moving and no new FFB packet arrives, so we
-        // tick the recalculation on a timer instead of relying solely on packet/axis events.
-        private System.Threading.Timer? _periodicEffectTimer;
-        private const int PeriodicEffectTickMs = 10;
-
-        public VJoyService(ILogService log, ForceFeedbackConfig ffbConfig, AxisRangeConfig axisConfig)
+        public VJoyService(ILogService log, ForceFeedbackConfig ffbConfig, ForceFeedbackHandler? ffbHandler = null)
         {
             _log = log;
             _ffbConfig = ffbConfig;
-            _axisConfig = axisConfig;
-            _ffbHandler = new ForceFeedbackHandler(_log, _ffbConfig);
+            _ffbHandler = ffbHandler ?? new ForceFeedbackHandler(log, ffbConfig);
+
+            // Timer de 10ms para reavaliar a força quando há efeitos periódicos em execução
+            _periodicTimer = new Timer(OnPeriodicTimerTick, null, 10, 10);
         }
 
         public bool Initialize(uint deviceId)
@@ -85,35 +79,33 @@ namespace vJoyBridge
 
             if (!_joystick.vJoyEnabled())
             {
-                _log.Error(LogPoint.General, "[vJoy] Driver or DLL missing.");
+                _log.Error(LogPoint.General, "[vJoy] Erro: Driver não encontrado ou DLL ausente.");
                 return false;
             }
 
             VjdStat status = _joystick.GetVJDStatus(deviceId);
             if (status != VjdStat.VJD_STAT_FREE && status != VjdStat.VJD_STAT_OWN)
             {
-                _log.Error(LogPoint.General, $"[vJoy] Device {deviceId} busy. Status: {status}");
+                _log.Error(LogPoint.General, $"[vJoy] Erro: Dispositivo {deviceId} ocupado. Status: {status}");
                 return false;
             }
 
             if (!_joystick.AcquireVJD(deviceId))
             {
-                _log.Error(LogPoint.General, $"[vJoy] Failed to acquire device {deviceId}.");
+                _log.Error(LogPoint.General, $"[vJoy] Erro ao adquirir o dispositivo {deviceId}.");
                 return false;
             }
 
-            _log.Info(LogPoint.General, $"[vJoy] Device {deviceId} acquired.");
+            _log.Info(LogPoint.General, $"[vJoy] Dispositivo {deviceId} adquirido com sucesso.");
 
             if (!_joystick.IsDeviceFfb(deviceId))
             {
-                _log.Warning(LogPoint.General, $"[vJoy] Device {deviceId} has no FFB support enabled.");
+                _log.Warning(LogPoint.General, $"[vJoy] ATENÇÃO: Dispositivo {deviceId} não está configurado para suportar FFB no painel do vJoy.");
             }
             else
             {
                 _joystick.FfbRegisterGenCB(OnFfbDataReceived, null);
-                _log.Info(LogPoint.General, "[vJoy] FFB registered successfully.");
-
-                _periodicEffectTimer = new System.Threading.Timer(_ => RecalculateConditionEffects(), null, PeriodicEffectTickMs, PeriodicEffectTickMs);
+                _log.Info(LogPoint.General, "[vJoy] Canal FFB registrado via wrapper vJoyInterfaceWrap.");
             }
 
             return true;
@@ -121,28 +113,53 @@ namespace vJoyBridge
 
         public void SetAxis(uint deviceId, HID_USAGES axis, int value)
         {
-            _joystick?.SetAxis(value, deviceId, axis);
+            int safeValue = Math.Clamp(value, 0, 32767);
+            _joystick?.SetAxis(safeValue, deviceId, axis);
 
             if (axis == HID_USAGES.HID_USAGE_X)
             {
-                UpdateAxisKinematicsAndRecalculate(value);
+                UpdateAxisKinematicsAndRecalculate(safeValue);
             }
-        }
-
-        public void SetButton(uint deviceId, uint buttonId, bool state)
-        {
-            _joystick?.SetBtn(state, deviceId, buttonId);
         }
 
         public void Shutdown(uint deviceId)
         {
-            _periodicEffectTimer?.Dispose();
-            _periodicEffectTimer = null;
-
+            _periodicTimer.Dispose();
             _joystick?.RelinquishVJD(deviceId);
-            _log.Info(LogPoint.General, $"[vJoy] Device {deviceId} released.");
+            _log.Info(LogPoint.General, $"[vJoy] Dispositivo {deviceId} liberado.");
         }
 
+        /// <summary>
+        /// Callback executado a cada tick do timer de 10ms.
+        /// Se houver efeitos periódicos ativos, recalcula e recalibra a força final enviada ao motor.
+        /// </summary>
+        private void OnPeriodicTimerTick(object? state)
+        {
+            bool hasActivePeriodic;
+            lock (_ffbLock)
+            {
+                hasActivePeriodic = HasActivePeriodicEffectsUnsafe();
+            }
+
+            if (hasActivePeriodic)
+            {
+                RecalculateTotalForce();
+            }
+        }
+
+        private bool HasActivePeriodicEffectsUnsafe()
+        {
+            foreach (var effect in _effects.Values)
+            {
+                if (effect.Active && IsPeriodicEffectType(effect.EffectType))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Callback principal de FFB do vJoy. Roteia os pacotes e delega tratamento/logs para o ForceFeedbackHandler.
+        /// </summary>
         private void OnFfbDataReceived(IntPtr packet, object userData)
         {
             FFBPType packetType = FFBPType.PT_EFFREP;
@@ -150,7 +167,11 @@ namespace vJoyBridge
 
             _ffbHandler.LogRawPacket(packet, typeResult, packetType);
 
-            if (typeResult != ERROR_SUCCESS) return;
+            if (typeResult != ERROR_SUCCESS)
+            {
+                _log.Warning(LogPoint.VJoyEvents, $"[vJoy FFB] Falha ao obter o tipo do pacote (Ffb_h_Type retornou {typeResult}). Pacote ignorado.");
+                return;
+            }
 
             switch (packetType)
             {
@@ -158,9 +179,50 @@ namespace vJoyBridge
                     FFB_CTRL control = 0;
                     if (_joystick?.Ffb_h_DevCtrl(packet, ref control) == ERROR_SUCCESS)
                     {
-                        _ffbHandler.ProcessDeviceControl(control, DispatchFfb,
-                            resetConditionEffects: () => { lock (_ffbLock) _conditionEffects.Clear(); },
-                            resetGain: () => _globalGain = 255);
+                        _ffbHandler.ProcessDeviceControl(control,
+                            onStopAll: () =>
+                            {
+                                lock (_ffbLock)
+                                {
+                                    foreach (var state in _effects.Values)
+                                    {
+                                        state.Active = false;
+                                        state.Stopwatch.Stop();
+                                    }
+                                }
+                                RecalculateTotalForce();
+                            },
+                            onReset: () =>
+                            {
+                                lock (_ffbLock)
+                                {
+                                    _effects.Clear();
+                                    _globalGain = 255;
+                                }
+                                RecalculateTotalForce();
+                            });
+                    }
+                    else
+                    {
+                        _log.Warning(LogPoint.VJoyEvents, "[vJoy FFB] PT_CTRLREP recebido, mas Ffb_h_DevCtrl falhou ao decodificar.");
+                    }
+                    break;
+
+                case FFBPType.PT_GAINREP:
+                case FFBPType.PT_SETGAINREP:
+                    byte gain = 255;
+                    if (_joystick?.Ffb_h_DevGain(packet, ref gain) == ERROR_SUCCESS)
+                    {
+                        lock (_ffbLock)
+                        {
+                            _globalGain = gain;
+                        }
+                        _ffbHandler.ProcessDeviceGain(gain);
+                        RecalculateTotalForce();
+                    }
+                    else
+                    {
+                        _log.Warning(LogPoint.VJoyEvents, "[vJoy FFB] PT_GAINREP recebido, mas Ffb_h_DevGain falhou ao decodificar.");
                     }
                     break;
 
@@ -168,13 +230,17 @@ namespace vJoyBridge
                     vJoyInterfaceWrap.vJoy.FFB_EFF_REPORT effectReport = default;
                     if (_joystick?.Ffb_h_Eff_Report(packet, ref effectReport) == ERROR_SUCCESS)
                     {
-                        if (IsConditionEffectType(effectReport.EffectType) || IsPeriodicEffectType(effectReport.EffectType))
+                        _ffbHandler.ProcessEffectReport(effectReport.EffectBlockIndex, effectReport.EffectType, effectReport.Direction);
+
+                        lock (_ffbLock)
                         {
-                            lock (_ffbLock)
-                            {
-                                GetOrCreateConditionState(effectReport.EffectBlockIndex).EffectType = effectReport.EffectType;
-                            }
+                            var state = GetOrCreateEffectState(effectReport.EffectBlockIndex);
+                            state.EffectType = effectReport.EffectType;
                         }
+                    }
+                    else
+                    {
+                        _log.Warning(LogPoint.VJoyEvents, "[vJoy FFB] PT_EFFREP recebido, mas Ffb_h_Eff_Report falhou ao decodificar.");
                     }
                     break;
 
@@ -182,19 +248,76 @@ namespace vJoyBridge
                     vJoyInterfaceWrap.vJoy.FFB_EFF_CONSTANT constantEffect = default;
                     if (_joystick?.Ffb_h_Eff_Constant(packet, ref constantEffect) == ERROR_SUCCESS)
                     {
-                        _ffbHandler.ProcessConstantEffect(constantEffect.Magnitude, DispatchFfb);
+                        _ffbHandler.ProcessConstantEffect(constantEffect.Magnitude);
+
+                        lock (_ffbLock)
+                        {
+                            var state = GetOrCreateEffectState(constantEffect.EffectBlockIndex);
+                            state.EffectType = FFBEType.ET_CONST;
+                            state.ConstantMagnitude = constantEffect.Magnitude;
+                            state.Active = true;
+                        }
+
+                        RecalculateTotalForce();
+                    }
+                    else
+                    {
+                        _log.Warning(LogPoint.VJoyEvents, "[vJoy FFB] PT_CONSTREP recebido, mas Ffb_h_Eff_Constant falhou ao decodificar.");
                     }
                     break;
 
                 case FFBPType.PT_CONDREP:
                     FfbCondition condition = default;
-                    if (_joystick?.Ffb_h_Eff_Cond(packet, ref condition) == ERROR_SUCCESS && !condition.isY)
+                    if (_joystick?.Ffb_h_Eff_Cond(packet, ref condition) == ERROR_SUCCESS)
+                    {
+                        if (!condition.isY)
+                        {
+                            lock (_ffbLock)
+                            {
+                                var state = GetOrCreateEffectState(condition.EffectBlockIndex);
+                                state.Condition = condition;
+                                _ffbHandler.ProcessConditionEffect(condition, state.EffectType);
+                            }
+
+                            RecalculateTotalForce();
+                        }
+                        else
+                        {
+                            _log.Debug(LogPoint.VJoyEvents, "[vJoy FFB] Condição no eixo Y ignorada (bridge só trata eixo X/rotação).");
+                        }
+                    }
+                    else
+                    {
+                        _log.Warning(LogPoint.VJoyEvents, "[vJoy FFB] PT_CONDREP recebido, mas Ffb_h_Eff_Cond falhou ao decodificar.");
+                    }
+                    break;
+
+                case FFBPType.PT_PRIDREP:
+                    vJoyInterfaceWrap.vJoy.FFB_EFF_PERIOD periodicEffect = default;
+                    if (_joystick?.Ffb_h_Eff_Period(packet, ref periodicEffect) == ERROR_SUCCESS)
                     {
                         lock (_ffbLock)
                         {
-                            GetOrCreateConditionState(condition.EffectBlockIndex).Condition = condition;
+                            var state = GetOrCreateEffectState(periodicEffect.EffectBlockIndex);
+                            state.PeriodicMagnitude = periodicEffect.Magnitude;
+                            state.PeriodicOffset = (int)periodicEffect.Offset;
+                            state.PeriodicPhase = periodicEffect.Phase;
+                            state.PeriodicPeriod = periodicEffect.Period;
+
+                            _ffbHandler.ProcessPeriodicEffect(
+                                periodicEffect.EffectBlockIndex,
+                                state.EffectType,
+                                periodicEffect.Magnitude,
+                                (int)periodicEffect.Offset,
+                                periodicEffect.Phase,
+                                periodicEffect.Period);
                         }
-                        RecalculateConditionEffects();
+
+                        RecalculateTotalForce();
+                    }
+                    else
+                    {
+                        _log.Warning(LogPoint.VJoyEvents, "[vJoy FFB] PT_PRIDREP recebido, mas Ffb_h_Eff_Period falhou ao decodificar.");
                     }
                     break;
 
@@ -204,87 +327,27 @@ namespace vJoyBridge
                     {
                         lock (_ffbLock)
                         {
-                            if (_conditionEffects.TryGetValue(effectOp.EffectBlockIndex, out var state))
+                            if (_effects.TryGetValue(effectOp.EffectBlockIndex, out var state))
                             {
-                                bool wasActive = state.Active;
-                                state.Active = effectOp.EffectOp is FFBOP.EFF_START or FFBOP.EFF_SOLO;
-
-                                // Reset the waveform's time origin every time the effect (re)starts,
-                                // so periodic effects (sine/square/etc.) restart from phase 0.
-                                if (state.Active && !wasActive)
-                                {
-                                    state.ActivationTimestamp = Stopwatch.GetTimestamp();
-                                }
+                                _ffbHandler.ProcessEffectOperation(effectOp.EffectOp, effectOp.EffectBlockIndex,
+                                    onStart: () =>
+                                    {
+                                        state.Active = true;
+                                        state.Stopwatch.Restart();
+                                    },
+                                    onStop: () =>
+                                    {
+                                        state.Active = false;
+                                        state.Stopwatch.Stop();
+                                    });
                             }
                         }
-                        _ffbHandler.ProcessEffectOperation(effectOp.EffectOp, effectOp.EffectBlockIndex, DispatchFfb);
+
+                        RecalculateTotalForce();
                     }
-                    break;
-
-                case FFBPType.PT_PRIDREP:
-                    vJoyInterfaceWrap.vJoy.FFB_EFF_PERIOD periodicEffect = default;
-                    if (_joystick?.Ffb_h_Eff_Period(packet, ref periodicEffect) == ERROR_SUCCESS)
+                    else
                     {
-                        FFBEType periodicType;
-                        lock (_ffbLock)
-                        {
-                            var state = GetOrCreateConditionState(periodicEffect.EffectBlockIndex);
-                            state.PeriodicMagnitude = periodicEffect.Magnitude;
-                            state.PeriodicOffset = periodicEffect.Offset;
-                            state.PeriodicPhase = periodicEffect.Phase;
-                            state.PeriodicPeriod = periodicEffect.Period;
-                            periodicType = state.EffectType;
-                        }
-
-                        _ffbHandler.ProcessPeriodicEffect(periodicEffect.EffectBlockIndex, periodicType,
-                            periodicEffect.Magnitude, periodicEffect.Offset, periodicEffect.Phase, periodicEffect.Period);
-
-                        RecalculateConditionEffects();
-                    }
-                    break;
-
-                case FFBPType.PT_NEWEFREP:
-                    uint newBlockIndex = 0;
-                    if (_joystick?.Ffb_h_EBI(packet, ref newBlockIndex) == ERROR_SUCCESS)
-                    {
-                        // The device can reuse a block index that was previously freed. Wipe any
-                        // stale cached state (old Active flag, condition, or periodic params) so it
-                        // can't leak into the new effect that's about to be configured on this block.
-                        lock (_ffbLock)
-                        {
-                            _conditionEffects.Remove((byte)newBlockIndex);
-                        }
-                        _ffbHandler.LogEffectBlockAllocated((byte)newBlockIndex);
-                    }
-                    break;
-
-                case FFBPType.PT_BLKFRREP:
-                    uint freedBlockIndex = 0;
-                    if (_joystick?.Ffb_h_EBI(packet, ref freedBlockIndex) == ERROR_SUCCESS)
-                    {
-                        // Stop and forget this block immediately. If it stayed in the dictionary
-                        // while still marked Active, it kept contributing force in
-                        // RecalculateConditionEffects() forever, even after the game freed it -
-                        // this is what produced the "stuck spinning" behavior seen in testing.
-                        lock (_ffbLock)
-                        {
-                            _conditionEffects.Remove((byte)freedBlockIndex);
-                        }
-                        _ffbHandler.LogEffectBlockFreed((byte)freedBlockIndex);
-                        RecalculateConditionEffects();
-                    }
-                    break;
-
-                case FFBPType.PT_GAINREP:
-                    byte gain = 255;
-                    if (_joystick?.Ffb_h_DevGain(packet, ref gain) == ERROR_SUCCESS)
-                    {
-                        _globalGain = gain;
-                        _ffbHandler.ProcessDeviceGain(gain);
-
-                        // Re-apply immediately to whatever effect is currently running, instead of
-                        // waiting for the next axis sample or FFB packet to pick up the new gain.
-                        RecalculateConditionEffects();
+                        _log.Warning(LogPoint.VJoyEvents, "[vJoy FFB] PT_EFOPREP recebido, mas Ffb_h_EffOp falhou ao decodificar.");
                     }
                     break;
 
@@ -294,20 +357,12 @@ namespace vJoyBridge
             }
         }
 
-        private void DispatchFfb(int pwm, int direction)
+        private EffectBlockState GetOrCreateEffectState(byte effectBlockIndex)
         {
-            byte gain = _globalGain;
-            int scaledPwm = gain == 255 ? pwm : Math.Clamp((int)Math.Round(pwm * (gain / 255.0)), 0, 255);
-
-            OnForceFeedbackReceived?.Invoke(scaledPwm, direction);
-        }
-
-        private ConditionEffectState GetOrCreateConditionState(byte blockIndex)
-        {
-            if (!_conditionEffects.TryGetValue(blockIndex, out var state))
+            if (!_effects.TryGetValue(effectBlockIndex, out var state))
             {
-                state = new ConditionEffectState();
-                _conditionEffects[blockIndex] = state;
+                state = new EffectBlockState { BlockIndex = effectBlockIndex };
+                _effects[effectBlockIndex] = state;
             }
             return state;
         }
@@ -316,15 +371,17 @@ namespace vJoyBridge
             type is FFBEType.ET_SPRNG or FFBEType.ET_DMPR or FFBEType.ET_INRT or FFBEType.ET_FRCTN;
 
         private static bool IsPeriodicEffectType(FFBEType type) =>
-            type is FFBEType.ET_SQR or FFBEType.ET_SINE or FFBEType.ET_TRNGL or FFBEType.ET_STUP or FFBEType.ET_STDN;
+            type is FFBEType.ET_SINE or FFBEType.ET_SQR or FFBEType.ET_TRI or FFBEType.ET_SAWT or FFBEType.ET_SAWD;
 
-        private void UpdateAxisKinematicsAndRecalculate(int rawAxisValue)
+        private void UpdateAxisKinematicsAndRecalculate(int axisValue)
         {
-            double normalized = NormalizePosition(rawAxisValue);
+            double normalized = NormalizePosition(axisValue);
             long now = Stopwatch.GetTimestamp();
 
             lock (_ffbLock)
             {
+                _lastAxisPositionX = axisValue;
+
                 if (_hasPreviousSample)
                 {
                     double dt = (now - _lastSampleTimestamp) / (double)Stopwatch.Frequency;
@@ -344,114 +401,79 @@ namespace vJoyBridge
                 _lastSampleTimestamp = now;
             }
 
-            RecalculateConditionEffects();
+            RecalculateTotalForce();
         }
 
-        private double NormalizePosition(int rawValue)
-        {
-            int range = _axisConfig.RawMax - _axisConfig.RawMin;
-            if (range <= 0) range = 1;
+        private static double NormalizePosition(int axisValue) => ((axisValue - 16383.5) / 16383.5) * 10000.0;
 
-            int clamped = Math.Clamp(rawValue, _axisConfig.RawMin, _axisConfig.RawMax);
-            return (((double)(clamped - _axisConfig.RawMin) / range) * 2.0 - 1.0) * 10000.0;
-        }
-
-        private void RecalculateConditionEffects()
+        /// <summary>
+        /// Recalcula a força total somando Constant, Condições e Periódicos ativos.
+        /// Aplica Ganho Global e repassa os valores calculados de PWM e Direção para o evento de saída.
+        /// </summary>
+        private void RecalculateTotalForce()
         {
-            double normalizedPos, velocity, acceleration;
-            List<EffectSnapshot>? activeEffects = null;
+            double normalizedPosition, velocity, acceleration;
+            byte globalGain;
+            List<EffectBlockState> activeSnapshot = new();
 
             lock (_ffbLock)
             {
-                normalizedPos = _lastNormalizedPos;
+                normalizedPosition = _lastNormalizedPos;
                 velocity = _lastVelocity;
                 acceleration = _lastAcceleration;
+                globalGain = _globalGain;
 
-                foreach (var state in _conditionEffects.Values)
+                foreach (var state in _effects.Values)
                 {
-                    if (!state.Active) continue;
-                    (activeEffects ??= new List<EffectSnapshot>()).Add(new EffectSnapshot
+                    if (state.Active)
                     {
-                        Type = state.EffectType,
-                        Condition = state.Condition,
-                        PeriodicMagnitude = state.PeriodicMagnitude,
-                        PeriodicOffset = state.PeriodicOffset,
-                        PeriodicPhase = state.PeriodicPhase,
-                        PeriodicPeriod = state.PeriodicPeriod,
-                        ActivationTimestamp = state.ActivationTimestamp
-                    });
+                        activeSnapshot.Add(state);
+                    }
                 }
             }
 
-            if (activeEffects == null || activeEffects.Count == 0) return;
-
-            double totalForce = 0;
-            foreach (var effect in activeEffects)
+            if (activeSnapshot.Count == 0)
             {
-                if (IsPeriodicEffectType(effect.Type))
-                {
-                    totalForce += CalculatePeriodicForce(effect.Type, effect.PeriodicMagnitude, effect.PeriodicOffset,
-                        effect.PeriodicPhase, effect.PeriodicPeriod, effect.ActivationTimestamp);
-                    continue;
-                }
-
-                double metric = effect.Type switch
-                {
-                    FFBEType.ET_DMPR or FFBEType.ET_FRCTN => velocity * _ffbConfig.VelocityScale,
-                    FFBEType.ET_INRT => acceleration * _ffbConfig.AccelerationScale,
-                    _ => normalizedPos
-                };
-
-                totalForce += CalculateConditionForce(effect.Condition, metric);
+                OnForceFeedbackReceived?.Invoke(0, 0);
+                return;
             }
 
-            totalForce = Math.Clamp(totalForce, -10000.0, 10000.0) * _ffbConfig.MagnitudeMultiplier;
+            double totalRawForce = 0;
 
-            int pwm = Math.Clamp((int)Math.Round(Math.Abs(totalForce) * 255.0 / 10000.0), 0, 255);
-            int direction = totalForce >= 0 ? 1 : 0;
-
-            DispatchFfb(pwm, direction);
-        }
-
-        // Periodic effects (square/sine/triangle/sawtooth) describe a waveform in time rather than
-        // a response to axis position/velocity, so the force is derived from elapsed time since the
-        // effect last started (Start/Solo), the reported Period/Phase, and Magnitude/Offset.
-        private static double CalculatePeriodicForce(FFBEType type, uint magnitude, int offset, uint phase, uint period, long activationTimestamp)
-        {
-            if (period == 0) return offset;
-
-            double elapsedMs = (Stopwatch.GetTimestamp() - activationTimestamp) * 1000.0 / Stopwatch.Frequency;
-            double phaseFraction = (phase / 100.0) / 360.0; // Phase is reported in hundredths of a degree (0-35999)
-
-            double cyclePos = (elapsedMs / period) + phaseFraction;
-            cyclePos -= Math.Floor(cyclePos); // wrap into [0, 1)
-
-            double waveform = type switch
+            foreach (var state in activeSnapshot)
             {
-                FFBEType.ET_SINE => Math.Sin(cyclePos * 2.0 * Math.PI),
-                FFBEType.ET_SQR => cyclePos < 0.5 ? 1.0 : -1.0,
-                FFBEType.ET_TRNGL => 1.0 - 4.0 * Math.Abs(cyclePos - 0.5),
-                FFBEType.ET_STUP => cyclePos * 2.0 - 1.0,
-                FFBEType.ET_STDN => 1.0 - cyclePos * 2.0,
-                _ => 0.0
-            };
+                if (state.EffectType == FFBEType.ET_CONST)
+                {
+                    totalRawForce += state.ConstantMagnitude;
+                }
+                else if (IsConditionEffectType(state.EffectType) || state.EffectType == FFBEType.ET_NONE)
+                {
+                    double metric = state.EffectType switch
+                    {
+                        FFBEType.ET_DMPR or FFBEType.ET_FRCTN => velocity * _ffbConfig.VelocityScale,
+                        FFBEType.ET_INRT => acceleration * _ffbConfig.AccelerationScale,
+                        _ => normalizedPosition // ET_SPRNG ou ainda sem tipo definido
+                    };
 
-            return Math.Clamp(offset + waveform * magnitude, -10000.0, 10000.0);
-        }
+                    totalRawForce += _ffbHandler.CalculateConditionForce(state.Condition, metric);
+                }
+                else if (IsPeriodicEffectType(state.EffectType))
+                {
+                    long elapsedMs = state.Stopwatch.ElapsedMilliseconds;
+                    totalRawForce += _ffbHandler.CalculatePeriodicForce(
+                        state.EffectType,
+                        state.PeriodicMagnitude,
+                        state.PeriodicOffset,
+                        state.PeriodicPhase,
+                        state.PeriodicPeriod,
+                        elapsedMs);
+                }
+            }
 
-        private static double CalculateConditionForce(FfbCondition condition, double metric)
-        {
-            double deadLow = condition.CenterPointOffset - condition.DeadBand;
-            double deadHigh = condition.CenterPointOffset + condition.DeadBand;
+            _ffbHandler.CalculateFinalForce(totalRawForce, globalGain, out int pwm, out int direction, out double finalForce);
+            _ffbHandler.LogForceCalculation(finalForce, pwm, direction, activeSnapshot.Count, globalGain);
 
-            double force;
-            if (metric < deadLow) force = (metric - deadLow) * condition.NegCoeff / 10000.0;
-            else if (metric > deadHigh) force = (metric - deadHigh) * condition.PosCoeff / 10000.0;
-            else force = 0.0;
-
-            return force >= 0
-                ? Math.Min(force, (double)condition.PosSatur)
-                : Math.Max(force, -(double)condition.NegSatur);
+            OnForceFeedbackReceived?.Invoke(pwm, direction);
         }
     }
 }
