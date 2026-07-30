@@ -31,8 +31,8 @@ O `vJoyBridge` sempre opera assumindo o **modo Serial**.
 | `ConfigService.cs` | Carrega/cria o `config.json` ao lado do executável |
 | `BridgeController.cs` | Orquestra o fluxo Serial ↔ vJoy |
 | `SerialService.cs` / `ISerialService.cs` | Comunicação serial com reconexão automática |
-| `VJoyService.cs` / `IJoystickService.cs` | Integração com o driver vJoy, incluindo o motor de FFB |
-| `ForceFeedbackHandler.cs` | Interpreta pacotes FFB (constante, condição, periódico, controle, ganho) |
+| `VJoyService.cs` / `IJoystickService.cs` | Adaptador fino do driver vJoy: aquisição/liberação do dispositivo, eixos, botões e registro do callback nativo de FFB. **Não contém lógica de FFB** — apenas repassa pacote/eixo para `ForceFeedbackHandler` |
+| `ForceFeedbackHandler.cs` | Dono exclusivo de todo o tratamento de eventos de Force Feedback: parsing dos pacotes nativos (`Ffb_h_*`), estado de cada bloco de efeito, timer de recálculo, e toda a matemática (condição/periódico/constante/ramp/envelope/ganho/duração) |
 | `LogService.cs` / `ILogService.cs` | Log em console/arquivo, configurável por nível e por ponto de origem |
 | `config.json` | Configuração padrão gerada/consumida em runtime |
 
@@ -40,19 +40,62 @@ O `vJoyBridge` sempre opera assumindo o **modo Serial**.
 
 1. `SerialService` abre a porta configurada, faz handshake (`H`) e lê linhas continuamente em uma thread dedicada.
 2. Cada linha recebida (`X:.. Y:.. Z:..`) é parseada por `BridgeController` e aplicada aos eixos correspondentes via `IJoystickService.SetAxis`.
-3. `VJoyService` registra um callback nativo de FFB (`FfbRegisterGenCB`) e traduz os pacotes do driver vJoy em força (PWM 0–255 + direção 0/1).
-4. O `BridgeController` escuta o evento `OnForceFeedbackReceived` e envia `F:<pwm>,<direção>` de volta pela serial para o STM32 mover o motor.
+3. `VJoyService` (adaptador) grava o eixo no dispositivo vJoy e repassa a amostra bruta para `ForceFeedbackHandler.UpdateAxisPosition`, que deriva posição/velocidade/aceleração normalizadas.
+4. O driver vJoy invoca o callback nativo de FFB registrado por `VJoyService`, que apenas encaminha o ponteiro do pacote para `ForceFeedbackHandler.HandlePacket` — todo o parsing e cálculo acontecem lá.
+5. `ForceFeedbackHandler` expõe o resultado (PWM 0–255 + direção) via `OnForceFeedbackReceived`; `BridgeController` escuta esse evento e envia `F:<pwm>,<direção>` pela serial para o STM32 mover o motor.
+
+Essa divisão existe para manter uma única responsabilidade por classe: `VJoyService` sabe falar com o driver vJoy (I/O), `ForceFeedbackHandler` sabe interpretar o protocolo FFB e transformar efeitos em força (domínio/cálculo). Antes, boa parte dessa segunda responsabilidade vivia dentro do `VJoyService`, o que misturava as duas coisas numa classe só.
 
 ### Force Feedback
 
-O `VJoyService` implementa um pipeline relativamente completo de FFB:
+O `VJoyService` implementa o pipeline de FFB cobrindo todos os tipos de efeito paramétricos do spec USB PID:
 
 - **Efeitos de condição** (Spring, Damper, Inertia, Friction), calculados a partir de posição, velocidade e aceleração do eixo X (derivadas numericamente a cada amostra).
 - **Efeitos periódicos** (Sine, Square, Triangle, Sawtooth Up/Down), calculados por tempo decorrido desde a ativação do bloco de efeito, via um timer de 10ms.
-- **Efeito constante**, repassado diretamente como PWM/direção.
-- **Controle de dispositivo** (`STOP ALL`, `DEVICE RESET`) e **ganho global** (0–255), aplicados sobre a força final antes do envio.
+- **Efeito constante**, com magnitude com sinal.
+- **Efeito Ramp**, interpolado linearmente entre `Start` e `End` ao longo da `Duration` do efeito.
+- **Envelope de attack/fade** (`PT_ENVREP`), aplicado sobre Constante, Ramp e Periódico — sobe linearmente de `AttackLevel` até a magnitude plena nos primeiros `AttackTime` ms, sustenta, e desce até `FadeLevel` nos últimos `FadeTime` ms antes da `Duration` (efeitos de duração infinita só sofrem attack). Efeitos de condição são excluídos do envelope, como define o spec.
+- **Duração de efeito**, respeitada: um efeito com `Duration` finita se autodesativa quando o tempo decorrido a ultrapassa, sem depender de o jogo mandar `EFF_STOP`.
+- **Controle de dispositivo**: `DEVICE RESET` limpa todos os blocos de efeito e restaura o ganho; `STOP ALL` desativa todos os blocos ativos (além de zerar a força na hora), evitando que um efeito periódico/ramp/constante "ressuscite" a força no próximo tick do timer.
+- **Ganho global** (0–255, `PT_GAINREP`), aplicado sobre a força final antes do envio, com recálculo imediato ao ser alterado.
 
-Todos os cálculos de força usam a escala nativa do vJoy (±10000) e são convertidos para PWM de 0–255 antes de seguir para a serial.
+Todos os cálculos de força usam a escala nativa do vJoy (±10000) e são convertidos para PWM de 0–255 antes de seguir para a serial. Todos os tipos de efeito passam pela mesma soma central em `RecalculateConditionEffects`, garantindo que `MagnitudeMultiplier` seja aplicado de forma consistente independente do tipo.
+
+**Fora de escopo (intencional)**: efeitos de **Custom Force** (`PT_CSTMREP`/`PT_SMPLREP`/`PT_SETCREP`), que descrevem uma forma de onda arbitrária via tabela de amostras baixada do jogo. Praticamente nenhum simulador de consumo os utiliza; pacotes desse tipo são apenas logados (`LogUnhandledPacket`), não descartados silenciosamente.
+
+> Os nomes dos métodos/structs do wrapper (`Ffb_h_Eff_Ramp`, `Ffb_h_Eff_Envlp`, `FFB_EFF_REPORT.Duration`) seguem a API pública padrão do SDK do vJoy. Como o `vJoyInterfaceWrap.dll` usado neste projeto não foi disponibilizado para inspeção, vale conferir esses nomes contra a versão do `.dll` em `lib/` antes de compilar.
+
+### Melhorias incorporadas (referência: [ranenbg/Arduino-FFB-wheel](https://github.com/ranenbg/Arduino-FFB-wheel))
+
+Esse projeto é uma referência séria em wheels FFB DIY (baseado no BRWheel). Duas práticas de lá foram trazidas para este projeto:
+
+- **Taxa de recálculo de FFB mais alta.** A referência calcula a força a 500Hz (2ms). O `RecalculationIntervalMs` em `config.json` (padrão `2`) substitui os 10ms fixos que este bridge usava antes — efeitos periódicos e de condição ficam mais suaves.
+- **Watchdog de segurança do motor no firmware.** Um motor DC preso ao volante nas mãos do usuário não pode ficar travado em força alta se o processo `vJoyBridge.exe` no PC crashar ou for encerrado sem fechar a porta corretamente (a porta COM pode continuar "aberta" no Windows mesmo com o processo pendurado). `firmware.ino` agora zera o motor (`FFB_WATCHDOG_MS`, padrão 500ms) se nenhum comando `F:` chegar dentro desse intervalo. Enquanto houver efeito de FFB ativo, o bridge já manda `F:` continuamente a cada 2–10ms, então esse fluxo funciona como heartbeat natural — o watchdog só dispara quando o host realmente para de responder.
+
+Uma outra ideia da referência **não** foi incorporada, por decisão consciente:
+- **PWM em frequência mais alta (8kHz+) no driver de motor** — reduz ruído audível e aumenta a resolução perto de zero. Não implementei porque depende de configurar registradores de timer específicos do STM32 usado (`analogWrite` hoje roda na frequência padrão do core Arduino_STM32), e eu não tenho como validar isso sem compilar contra a placa real.
+
+### Mola de fim de curso (endstop)
+
+Força sintética, gerada inteiramente pelo bridge — **não depende de nenhum pacote FFB do jogo**. Existe para dar resistência perto dos limites físicos do eixo mesmo quando o jogo não manda nenhum efeito ali (o cenário relatado em testes: sem resistência nenhuma nas extremidades).
+
+Funcionamento: fora de uma "zona de margem" perto de cada ponta do curso, força 0 (não interfere em nada). Dentro da zona, a força cresce progressivamente (`t²`, não linear) da borda da zona até a intensidade máxima configurada, bem no limite físico — sempre empurrando de volta para o centro. Ela se soma à força que o jogo estiver pedindo (spring/damper/etc.), em vez de substituí-la.
+
+Configurável em `ForceFeedback.Endstop` no `config.json`:
+
+```json
+"Endstop": {
+  "Enabled": true,
+  "MarginPercent": 0.08,
+  "Strength": 6000
+}
+```
+
+| Campo | Descrição |
+|---|---|
+| `Enabled` | Liga/desliga a mola de fim de curso |
+| `MarginPercent` | Fração do curso total (0.0–1.0), a partir de CADA ponta, onde a mola passa a atuar. `0.08` = últimos 8% de cada lado |
+| `Strength` | Magnitude máxima (escala vJoy: 0–10000) aplicada bem no limite físico do eixo |
 
 ## Configuração (`config.json`)
 
