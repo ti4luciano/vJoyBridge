@@ -58,5 +58,32 @@ namespace vJoyBridge
         public double MagnitudeMultiplier { get; set; } = 1.0;
         public double VelocityScale { get; set; } = 1.0;
         public double AccelerationScale { get; set; } = 1.0;
+
+        // Intervalo do timer que recalcula efeitos baseados em tempo (Periódico/Ramp/Constante
+        // com envelope). Extraído de referências de wheels FFB DIY que rodam esse cálculo a
+        // 500Hz (2ms); valores mais altos economizam CPU mas deixam a forma de onda mais "em
+        // degraus", especialmente perceptível em efeitos periódicos de frequência alta.
+        public int RecalculationIntervalMs { get; set; } = 2;
+
+        public EndstopConfig Endstop { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Mola de fim de curso (endstop): força sintética, independente de qualquer efeito FFB
+    /// enviado pelo jogo, que empurra o eixo de volta ao centro quando ele se aproxima dos
+    /// limites físicos (RawMin/RawMax do VJoyConfig.AxisX). Protege a mecânica em jogos que não
+    /// aplicam nenhuma resistência perto do fim de curso.
+    /// </summary>
+    public class EndstopConfig
+    {
+        public bool Enabled { get; set; } = true;
+
+        // Fração do curso total (0.0-1.0), a partir de CADA ponta, onde a mola passa a atuar.
+        // 0.08 = os últimos 8% de cada lado. Fora dessa zona, força 0 - não interfere em nada.
+        public double MarginPercent { get; set; } = 0.08;
+
+        // Magnitude máxima (escala vJoy: 0-10000) aplicada bem no limite físico do eixo.
+        // Cresce progressivamente (não linear) da borda da zona até aqui.
+        public double Strength { get; set; } = 6000;
     }
 }

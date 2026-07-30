@@ -29,6 +29,12 @@
   "ForceFeedback": {
     "MagnitudeMultiplier": 1.0,
     "VelocityScale": 1.0,
-    "AccelerationScale": 1.0
+    "AccelerationScale": 1.0,
+    "RecalculationIntervalMs": 2,
+    "Endstop": {
+      "Enabled": true,
+      "MarginPercent": 0.08,
+      "Strength": 6000
+    }
   }
 }

@@ -174,6 +174,15 @@ class StatusLed {
 #define LIMITE_MIN 0
 #define LIMITE_MAX 512
 
+// Watchdog de segurança do motor: se nenhum comando F: (força) chegar dentro desse
+// intervalo, o motor é forçado a 0. Sem isso, se o processo vJoyBridge no PC travar
+// ou for encerrado abruptamente sem fechar a porta COM corretamente, o STM32 continua
+// aplicando o último PWM recebido indefinidamente - perigoso com um motor DC acoplado
+// diretamente ao volante nas mãos do usuário. Enquanto houver um efeito de FFB ativo,
+// o bridge manda comandos F: continuamente (a cada 2-10ms), então esse fluxo funciona
+// como heartbeat natural; ele só para se o host realmente parar de responder.
+#define FFB_WATCHDOG_MS 500
+
 // ==================================================================
 // VARIÁVEIS GLOBAIS E OBJETOS
 // ==================================================================
@@ -192,6 +201,9 @@ const unsigned long SEND_INTERVAL_MS_USB = 10;
 
 char rxBuffer[32];
 uint8_t rxIndex = 0;
+
+unsigned long lastForceCommandTime = 0;
+bool ffbWatchdogTripped = false;
 
 void parseSerialCommand(char* cmd);
 void setMotorForce(int pwm, int dir);
@@ -242,6 +254,10 @@ void setup() {
     // Ponto Chave: Sucesso no Handshake / Modo Serial
     statusLed.blink(2, 200, 200);
     statusLed.on(); // Mantém aceso para indicar Serial
+
+    // Começa a contar o watchdog só a partir daqui, senão ele dispararia (sem efeito
+    // nenhum, já que o motor está parado) antes mesmo do bridge no PC subir.
+    lastForceCommandTime = millis();
   } else {
     // Desliga CDC para usar interface HID nativa
     Serial.end();
@@ -296,6 +312,13 @@ void loop() {
       Serial.print(" B:");
       Serial.println(readButtons());
     }
+
+    // Watchdog: sem comando F: recente, corta a força. Só chama setMotorForce uma vez
+    // (flag ffbWatchdogTripped) para não ficar escrevendo nos pinos PWM a cada loop().
+    if (!ffbWatchdogTripped && (currentTime - lastForceCommandTime > FFB_WATCHDOG_MS)) {
+      setMotorForce(0, 0);
+      ffbWatchdogTripped = true;
+    }
   } else {
     if (currentTime - lastSendTime >= SEND_INTERVAL_MS_USB) {
       lastSendTime = currentTime;
@@ -328,6 +351,9 @@ void parseSerialCommand(char* cmd) {
       ptr++;
       int dirValue = (*ptr == '1') ? 1 : 0;
       setMotorForce(pwmValue, dirValue);
+
+      lastForceCommandTime = millis();
+      ffbWatchdogTripped = false;
     }
   }
 }
