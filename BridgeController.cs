@@ -42,6 +42,9 @@ namespace vJoyBridge
 
         private void HandleSerialMessage(string message)
         {
+
+            _log.Debug(LogPoint.SerialToVJoy, $"[Serial Received] raw message:{message}");
+
             string[] tokens = message.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
             foreach (string token in tokens)

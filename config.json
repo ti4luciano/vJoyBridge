@@ -7,7 +7,7 @@
     }
   },
   "Serial": {
-    "PortName": "COM6",
+    "PortName": "COM7",
     "BaudRate": 115200,
     "Reconnect": {
       "Enabled": true,
@@ -16,14 +16,14 @@
     }
   },
   "Logging": {
-    "Enabled": false,
+    "Enabled": true,
     "Level": "Debug",
     "LogToConsole": true,
-    "LogToFile": true,
+    "LogToFile": false,
     "LogFilePath": "vjoybridge.log",
     "Points": {
       "SerialToVJoy": false,
-      "VJoyEvents": true
+      "VJoyEvents": false
     }
   },
   "ForceFeedback": {
@@ -32,7 +32,7 @@
     "AccelerationScale": 1.0,
     "RecalculationIntervalMs": 2,
     "Endstop": {
-      "Enabled": true,
+      "Enabled": false,
       "MarginPercent": 0.08,
       "Strength": 6000
     }

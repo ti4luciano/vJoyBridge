@@ -238,9 +238,9 @@ void setup() {
 
   Serial.begin(115200);
 
-  // Janela de Handshake (3 Segundos)
+  // Janela de Handshake (5 Segundos)
   unsigned long bootTime = millis();
-  while (millis() - bootTime < 3000) {
+  while (millis() - bootTime < 5000) {
     if (Serial.available() > 0) {
       char c = Serial.read();
       if (c == 'H') { 
